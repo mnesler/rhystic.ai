@@ -132,23 +132,25 @@ app.get("/auth/callback", async (req, res) => {
 
     const frontendUrl = FRONTEND_ORIGIN || "http://localhost:5174";
 
-    // Set httpOnly cookie for server-side auth
-    res.cookie("auth_token", jwtToken, {
+    const isProduction = process.env.NODE_ENV === "production";
+    const isLocalhost = GITHUB_CALLBACK_URL.includes("localhost");
+    const isSecure = isProduction && !isLocalhost;
+    const cookieOptions = {
       httpOnly: true,
-      secure: true,
-      sameSite: "lax",
+      secure: isSecure,
+      sameSite: "lax" as const,
       maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+      domain: "localhost",
+    };
 
-    // Also set a JS-accessible token for frontend to store in localStorage
+    res.cookie("auth_token", jwtToken, cookieOptions);
+
     res.cookie("auth_token_js", jwtToken, {
+      ...cookieOptions,
       httpOnly: false,
-      secure: true,
-      sameSite: "lax",
-      maxAge: 30 * 24 * 60 * 60 * 1000,
     });
 
-    res.redirect(`${frontendUrl}/app`);
+    res.redirect(`${frontendUrl}/app?token=${jwtToken}`);
   } catch (error) {
     console.error("Auth callback error:", error);
     res.status(500).json({ error: "Authentication failed" });

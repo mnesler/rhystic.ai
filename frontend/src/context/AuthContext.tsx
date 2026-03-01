@@ -25,44 +25,71 @@ export const AuthProvider: ParentComponent = (props) => {
   const [loading, setLoading] = createSignal(true);
 
   function getCookie(name: string): string | null {
-    const match = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+"));
-    return match ? decodeURIComponent(match[2]) : null;
+    return document.cookie
+      .split("; ")
+      .find((c) => c.startsWith(name + "="))
+      ?.split("=")[1] ?? null;
   }
 
   async function fetchUser() {
-    // First try to get token from cookie, fallback to localStorage for dev
-    let token = getCookie("auth_token_js") || localStorage.getItem("auth_token");
-    
-    // If we got token from cookie, store in localStorage for consistency
-    if (token && !localStorage.getItem("auth_token")) {
-      localStorage.setItem("auth_token", token);
-    }
-    
-    if (!token) {
+    // Timeout fallback - ensure loading is set to false after 5 seconds
+    const timeoutId = setTimeout(() => {
+      console.log("[Auth] timeout, setting loading false");
       setLoading(false);
-      return;
-    }
+    }, 5000);
 
     try {
+      // Check for token in URL first (from OAuth redirect)
+      const urlParams = new URLSearchParams(window.location.search);
+      let token = urlParams.get("token");
+      if (token) {
+        console.log("[Auth] token from URL:", token.substring(0, 20) + "...");
+        localStorage.setItem("auth_token", token);
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+      
+      // Fallback to cookie or localStorage
+      if (!token) {
+        token = getCookie("auth_token_js") || localStorage.getItem("auth_token");
+      }
+      
+      // If we got token from cookie, store in localStorage for consistency
+      if (token && !localStorage.getItem("auth_token")) {
+        localStorage.setItem("auth_token", token);
+      }
+      
+      if (!token) {
+        console.log("[Auth] no token found");
+        clearTimeout(timeoutId);
+        setLoading(false);
+        return;
+      }
+
+      console.log("[Auth] calling /auth/me with token:", token.substring(0, 20) + "...");
       const response = await fetch(`${API_URL}/auth/me`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
+        credentials: "include",
       });
+
+      console.log("[Auth] response status:", response.status);
 
       if (response.ok) {
         const userData = await response.json();
+        console.log("[Auth] user data:", userData);
         setUser(userData);
       } else {
-        // Token is invalid, clear it
+        console.log("[Auth] token invalid");
         localStorage.removeItem("auth_token");
         setUser(null);
       }
     } catch (err) {
-      console.error("Failed to fetch user:", err);
+      console.error("[Auth] fetch error:", err);
       localStorage.removeItem("auth_token");
       setUser(null);
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
     }
   }
@@ -75,6 +102,7 @@ export const AuthProvider: ParentComponent = (props) => {
       await fetch(`${API_URL}/auth/logout`, {
         method: "POST",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: "include",
       });
     } catch (err) {
       console.error("Logout API call failed:", err);
