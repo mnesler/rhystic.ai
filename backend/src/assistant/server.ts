@@ -41,24 +41,37 @@ import { parseDecklist } from "../deck/parser.js";
 
 const PORT = parseInt(process.env.MTG_PORT ?? process.env.PORT ?? "3002");
 
-// ── Express app ───────────────────────────────────────────────────────────────
+// ── Environment ───────────────────────────────────────────────────────────────
 
-const app = express();
+const isProduction = process.env.NODE_ENV === "production";
 
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "";
-app.use(cors({
-  origin: FRONTEND_ORIGIN ? FRONTEND_ORIGIN : true,
-  credentials: true,
-}));
+// Fail fast in production if required secrets are missing
+if (isProduction) {
+  const required = ["JWT_SECRET", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "GITHUB_CALLBACK_URL", "FRONTEND_ORIGIN"];
+  const missing = required.filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    throw new Error(`Missing required environment variables in production: ${missing.join(", ")}`);
+  }
+}
 
-app.use(express.json({ limit: "512kb" }));
-
-// ── Auth helpers ───────────────────────────────────────────────────────────────
+// ── Auth configuration ────────────────────────────────────────────────────────
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-in-prod";
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID ?? "";
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET ?? "";
 const GITHUB_CALLBACK_URL = process.env.GITHUB_CALLBACK_URL ?? "http://localhost:3002/auth/callback";
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "http://localhost:5174";
+
+// ── Express app ───────────────────────────────────────────────────────────────
+
+const app = express();
+
+app.use(cors({
+  origin: FRONTEND_ORIGIN,
+  credentials: true,
+}));
+
+app.use(express.json({ limit: "512kb" }));
 
 interface GitHubUser {
   id: number;
@@ -88,12 +101,7 @@ function verifyToken(token: string): GitHubUser | null {
 
 app.get("/auth/github", (_req, res) => {
   const scope = "read:user user:email";
-  const isProduction = process.env.FRONTEND_ORIGIN?.includes("run.app");
-  const clientId = isProduction ? "Ov23livP93HqHVozWBdz" : GITHUB_CLIENT_ID;
-  const callbackUrl = isProduction 
-    ? "https://mtg-backend-442808877651.us-central1.run.app/auth/callback"
-    : GITHUB_CALLBACK_URL;
-  const githubUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=${scope}`;
+  const githubUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(GITHUB_CALLBACK_URL)}&scope=${scope}`;
   res.redirect(githubUrl);
 });
 
@@ -135,17 +143,12 @@ app.get("/auth/callback", async (req, res) => {
 
     const jwtToken = generateToken(githubUser);
 
-    const frontendUrl = FRONTEND_ORIGIN || "http://localhost:5174";
-
-    const isProduction = process.env.NODE_ENV === "production";
-    const isLocalhost = GITHUB_CALLBACK_URL.includes("localhost");
-    const isSecure = isProduction && !isLocalhost;
     const cookieOptions = {
       httpOnly: true,
-      secure: isSecure,
+      secure: isProduction,
       sameSite: "lax" as const,
       maxAge: 30 * 24 * 60 * 60 * 1000,
-      domain: "localhost",
+      ...(isProduction ? {} : { domain: "localhost" }),
     };
 
     res.cookie("auth_token", jwtToken, cookieOptions);
@@ -155,7 +158,7 @@ app.get("/auth/callback", async (req, res) => {
       httpOnly: false,
     });
 
-    res.redirect(`${frontendUrl}/app?token=${jwtToken}`);
+    res.redirect(`${FRONTEND_ORIGIN}/app?token=${jwtToken}`);
   } catch (error) {
     console.error("Auth callback error:", error);
     res.status(500).json({ error: "Authentication failed" });
