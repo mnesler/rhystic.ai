@@ -7,7 +7,7 @@ RUN npm install
 
 FROM base AS builder
 
-ARG VITE_API_URL=http://localhost:3002
+ARG VITE_API_URL=
 ENV VITE_API_URL=${VITE_API_URL}
 
 COPY frontend/index.html ./
