@@ -115,45 +115,6 @@ npm run ingest:scryfall
 npm run embed:cards
 ```
 
-## Environment Variables
-
-### Backend (.env)
-```
-GITHUB_CLIENT_ID=        # GitHub OAuth app client ID
-GITHUB_CLIENT_SECRET=    # GitHub OAuth app client secret
-GITHUB_CALLBACK_URL=     # OAuth callback URL
-JWT_SECRET=              # Secret for JWT tokens
-FRONTEND_ORIGIN=         # Frontend URL for CORS
-OPENROUTER_API_KEY=      # API key for LLM
-```
-
-### Frontend (.env)
-```
-VITE_API_URL=            # Backend API URL (empty = relative paths)
-```
-
-## Deployment (GCP)
-
-```bash
-# Build and push backend
-docker build -f Dockerfile.backend -t gcr.io/PROJECT/mtg-backend:latest .
-docker push gcr.io/PROJECT/mtg-backend:latest
-
-# Build and push frontend
-docker build -f Dockerfile.frontend -t gcr.io/PROJECT/mtg-frontend:latest \
-  --build-arg VITE_API_URL= .
-docker push gcr.io/PROJECT/mtg-frontend:latest
-
-# Deploy to Cloud Run
-gcloud run deploy mtg-backend \
-  --image gcr.io/PROJECT/mtg-backend:latest \
-  --set-env-vars "FRONTEND_ORIGIN=https://..."
-
-gcloud run deploy mtg-frontend \
-  --image gcr.io/PROJECT/mtg-frontend:latest \
-  --allow-unauthenticated
-```
-
 ## License
 
 MIT
