@@ -32,60 +32,39 @@ export const AuthProvider: ParentComponent = (props) => {
   }
 
   async function fetchUser() {
-    // Timeout fallback - ensure loading is set to false after 5 seconds
-    const timeoutId = setTimeout(() => {
-      console.log("[Auth] timeout, setting loading false");
-      setLoading(false);
-    }, 5000);
+    // Timeout fallback — ensure loading is cleared even if fetch hangs
+    const timeoutId = setTimeout(() => setLoading(false), 5000);
 
     try {
-      // Check for token in URL first (from OAuth redirect)
-      const urlParams = new URLSearchParams(window.location.search);
-      let token = urlParams.get("token");
-      if (token) {
-        console.log("[Auth] token from URL:", token.substring(0, 20) + "...");
-        localStorage.setItem("auth_token", token);
-        window.history.replaceState({}, "", window.location.pathname);
-      }
-      
-      // Fallback to cookie or localStorage
-      if (!token) {
-        token = getCookie("auth_token_js") || localStorage.getItem("auth_token");
-      }
-      
-      // If we got token from cookie, store in localStorage for consistency
+      // Token comes from the JS-readable cookie set by the backend after OAuth.
+      // We no longer accept tokens via URL query params — that exposed full JWTs
+      // in server access logs and browser history.
+      let token = getCookie("auth_token_js") || localStorage.getItem("auth_token");
+
+      // Persist to localStorage so subsequent page loads don't need the cookie
       if (token && !localStorage.getItem("auth_token")) {
         localStorage.setItem("auth_token", token);
       }
-      
+
       if (!token) {
-        console.log("[Auth] no token found");
-        clearTimeout(timeoutId);
         setLoading(false);
+        clearTimeout(timeoutId);
         return;
       }
 
-      console.log("[Auth] calling /auth/me with token:", token.substring(0, 20) + "...");
       const response = await fetch(`${API_URL}/auth/me`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
         credentials: "include",
       });
 
-      console.log("[Auth] response status:", response.status);
-
       if (response.ok) {
-        const userData = await response.json();
-        console.log("[Auth] user data:", userData);
+        const userData = await response.json() as User;
         setUser(userData);
       } else {
-        console.log("[Auth] token invalid");
         localStorage.removeItem("auth_token");
         setUser(null);
       }
-    } catch (err) {
-      console.error("[Auth] fetch error:", err);
+    } catch {
       localStorage.removeItem("auth_token");
       setUser(null);
     } finally {
@@ -104,8 +83,8 @@ export const AuthProvider: ParentComponent = (props) => {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         credentials: "include",
       });
-    } catch (err) {
-      console.error("Logout API call failed:", err);
+    } catch {
+      // best-effort — clear local state regardless
     }
 
     // Clear local state

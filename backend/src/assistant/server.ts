@@ -148,17 +148,19 @@ app.get("/auth/callback", async (req, res) => {
       secure: isProduction,
       sameSite: "lax" as const,
       maxAge: 30 * 24 * 60 * 60 * 1000,
-      ...(isProduction ? {} : { domain: "localhost" }),
     };
 
+    // HttpOnly cookie — backend/SSR reads
     res.cookie("auth_token", jwtToken, cookieOptions);
 
+    // Readable-by-JS cookie — frontend reads to hydrate auth state
+    // Not in URL: prevents token from appearing in access logs or browser history
     res.cookie("auth_token_js", jwtToken, {
       ...cookieOptions,
       httpOnly: false,
     });
 
-    res.redirect(`${FRONTEND_ORIGIN}/app?token=${jwtToken}`);
+    res.redirect(`${FRONTEND_ORIGIN}/app`);
   } catch (error) {
     console.error("Auth callback error:", error);
     res.status(500).json({ error: "Authentication failed" });

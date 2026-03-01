@@ -1,28 +1,17 @@
-// OAuth callback handler - extracts JWT from URL and stores it
+// OAuth callback handler - tokens are now delivered via cookie, not URL params.
+// This route exists only to catch any stale redirects and forward to /app.
 
 import { onMount } from "solid-js";
-import { useNavigate, useSearchParams } from "@solidjs/router";
+import { useNavigate } from "@solidjs/router";
 import "../styles/glitch.css";
 
 export default function Auth() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
 
   onMount(() => {
-    const token = Array.isArray(searchParams.token) ? searchParams.token[0] : searchParams.token;
-
-    if (token) {
-      // Store the access token
-      localStorage.setItem("auth_token", token);
-
-      // Redirect to app after brief delay for visual effect
-      setTimeout(() => {
-        navigate("/app", { replace: true });
-      }, 800);
-    } else {
-      // No token found, redirect back to landing
-      navigate("/?error=no_token", { replace: true });
-    }
+    // Auth state is hydrated from the auth_token_js cookie in AuthContext.
+    // Nothing to extract from the URL — just go to the app.
+    navigate("/app", { replace: true });
   });
 
   return (
