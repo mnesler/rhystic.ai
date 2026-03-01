@@ -24,8 +24,20 @@ export const AuthProvider: ParentComponent = (props) => {
   const [user, setUser] = createSignal<User | null>(null);
   const [loading, setLoading] = createSignal(true);
 
+  function getCookie(name: string): string | null {
+    const match = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+"));
+    return match ? decodeURIComponent(match[2]) : null;
+  }
+
   async function fetchUser() {
-    const token = localStorage.getItem("auth_token");
+    // First try to get token from cookie, fallback to localStorage for dev
+    let token = getCookie("auth_token_js") || localStorage.getItem("auth_token");
+    
+    // If we got token from cookie, store in localStorage for consistency
+    if (token && !localStorage.getItem("auth_token")) {
+      localStorage.setItem("auth_token", token);
+    }
+    
     if (!token) {
       setLoading(false);
       return;

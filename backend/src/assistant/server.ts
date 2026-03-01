@@ -19,6 +19,7 @@ import "dotenv/config";
 import { createServer } from "http";
 import express from "express";
 import cors from "cors";
+import jwt from "jsonwebtoken";
 import { warmCache } from "./vector.js";
 import { getDb } from "../db/client.js";
 import { classifyIntent } from "./intent.js";
@@ -43,8 +44,168 @@ const PORT = parseInt(process.env.MTG_PORT ?? process.env.PORT ?? "3002");
 // ── Express app ───────────────────────────────────────────────────────────────
 
 const app = express();
-app.use(cors());
+
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "";
+app.use(cors({
+  origin: FRONTEND_ORIGIN ? FRONTEND_ORIGIN : true,
+  credentials: true,
+}));
+
 app.use(express.json({ limit: "512kb" }));
+
+// ── Auth helpers ───────────────────────────────────────────────────────────────
+
+const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-in-prod";
+const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID ?? "";
+const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET ?? "";
+const GITHUB_CALLBACK_URL = process.env.GITHUB_CALLBACK_URL ?? "http://localhost:3002/auth/callback";
+
+interface GitHubUser {
+  id: number;
+  login: string;
+  name: string;
+  avatar_url: string;
+  email: string;
+}
+
+function generateToken(user: GitHubUser): string {
+  return jwt.sign(
+    { id: user.id, login: user.login, name: user.name, avatar: user.avatar_url, email: user.email },
+    JWT_SECRET,
+    { expiresIn: "30d" }
+  );
+}
+
+function verifyToken(token: string): GitHubUser | null {
+  try {
+    return jwt.verify(token, JWT_SECRET) as GitHubUser;
+  } catch {
+    return null;
+  }
+}
+
+// ── Auth routes ───────────────────────────────────────────────────────────────
+
+app.get("/auth/github", (_req, res) => {
+  const scope = "read:user user:email";
+  const githubUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(GITHUB_CALLBACK_URL)}&scope=${scope}`;
+  res.redirect(githubUrl);
+});
+
+app.get("/auth/callback", async (req, res) => {
+  const { code } = req.query;
+
+  if (!code || typeof code !== "string") {
+    res.status(400).json({ error: "No code provided" });
+    return;
+  }
+
+  try {
+    const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        client_id: GITHUB_CLIENT_ID,
+        client_secret: GITHUB_CLIENT_SECRET,
+        code,
+      }),
+    });
+
+    const tokenData = (await tokenResponse.json()) as { access_token?: string; error?: string };
+
+    if (!tokenData.access_token) {
+      throw new Error(tokenData.error ?? "Failed to get access token");
+    }
+
+    const githubResponse = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`,
+      },
+    });
+
+    const githubUser = (await githubResponse.json()) as GitHubUser;
+
+    const jwtToken = generateToken(githubUser);
+
+    const frontendUrl = FRONTEND_ORIGIN || "http://localhost:5174";
+
+    // Set httpOnly cookie for server-side auth
+    res.cookie("auth_token", jwtToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+
+    // Also set a JS-accessible token for frontend to store in localStorage
+    res.cookie("auth_token_js", jwtToken, {
+      httpOnly: false,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+
+    res.redirect(`${frontendUrl}/app`);
+  } catch (error) {
+    console.error("Auth callback error:", error);
+    res.status(500).json({ error: "Authentication failed" });
+  }
+});
+
+app.get("/auth/me", (req, res) => {
+  const token = req.cookies?.auth_token ?? req.headers.authorization?.replace("Bearer ", "");
+
+  if (!token) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
+
+  const user = verifyToken(token);
+
+  if (!user) {
+    res.status(401).json({ error: "Invalid token" });
+    return;
+  }
+
+  res.json({
+    id: user.id,
+    login: user.login,
+    name: user.name,
+    avatar: user.avatar_url,
+    email: user.email,
+  });
+});
+
+app.post("/auth/logout", (_req, res) => {
+  res.clearCookie("auth_token");
+  res.json({ success: true });
+});
+
+// Need cookie-parser for express - using manual parsing above
+// Add cookie parsing middleware
+import { parse } from "cookie";
+
+// Add cookie parsing middleware
+app.use((req, _res, next) => {
+  req.cookies = {};
+  const cookieHeader = req.headers.cookie;
+  if (cookieHeader) {
+    req.cookies = parse(cookieHeader);
+  }
+  next();
+});
+
+// Also parse Authorization header
+app.use((req, _res, next) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith("Bearer ")) {
+    req.cookies.auth_token = authHeader.substring(7);
+  }
+  next();
+});
 
 // ── POST /api/chat ─────────────────────────────────────────────────────────────
 
