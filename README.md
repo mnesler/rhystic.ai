@@ -2,6 +2,8 @@
 
 An AI-powered MTG Commander deck assistant that helps you analyze, optimize, and build better Commander decks using RAG (Retrieval-Augmented Generation).
 
+**Live App**: https://mtg-frontend-442808877651.us-central1.run.app
+
 ![Login Screen](loginss.png)
 
 ![Agent Interface](agentss.png)
