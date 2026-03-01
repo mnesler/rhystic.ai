@@ -15,6 +15,12 @@ frontend/dist/
 .env
 .env.local
 
+# Playwright
+frontend/e2e/.auth/
+frontend/e2e/report/
+frontend/test-results/
+frontend/playwright-report/
+
 # IDE
 .idea/
 .vscode/

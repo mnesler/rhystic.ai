@@ -7,13 +7,17 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
     "@solidjs/router": "^0.15.4",
     "solid-js": "^1.8.11"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@solidjs/testing-library": "^0.8.10",
     "@types/node": "^20.11.0",
     "jsdom": "^28.1.0",
