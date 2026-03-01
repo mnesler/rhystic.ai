@@ -5,7 +5,7 @@ import { useNavigate, useSearchParams } from "@solidjs/router";
 import GlitchyButton from "../components/GlitchyButton";
 import "../styles/glitch.css";
 
-const API_URL = (import.meta as any).env?.VITE_API_URL || "http://localhost:3000";
+const API_URL = (import.meta as any).env?.VITE_API_URL || "";
 
 export default function Landing() {
   const navigate = useNavigate();
