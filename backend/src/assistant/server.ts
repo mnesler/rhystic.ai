@@ -88,7 +88,12 @@ function verifyToken(token: string): GitHubUser | null {
 
 app.get("/auth/github", (_req, res) => {
   const scope = "read:user user:email";
-  const githubUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(GITHUB_CALLBACK_URL)}&scope=${scope}`;
+  const isProduction = process.env.FRONTEND_ORIGIN?.includes("run.app");
+  const clientId = isProduction ? "Ov23livP93HqHVozWBdz" : GITHUB_CLIENT_ID;
+  const callbackUrl = isProduction 
+    ? "https://mtg-backend-442808877651.us-central1.run.app/auth/callback"
+    : GITHUB_CALLBACK_URL;
+  const githubUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&scope=${scope}`;
   res.redirect(githubUrl);
 });
 
