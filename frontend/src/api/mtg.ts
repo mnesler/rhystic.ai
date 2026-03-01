@@ -3,6 +3,16 @@
 // The Vite dev server proxies /api → http://localhost:3002, so all
 // fetch calls use relative paths.
 
+// ── Auth helper ───────────────────────────────────────────────────────────────
+
+function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const token = localStorage.getItem("auth_token");
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...extra,
+  };
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface DeckCard {
@@ -62,7 +72,7 @@ export async function loadDeckFromMoxfield(
 ): Promise<LoadDeckResponse> {
   const res = await fetch("/api/deck/load", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ moxfieldUrl, sessionId }),
   });
 
@@ -80,7 +90,7 @@ export async function loadDeckFromPaste(
 ): Promise<LoadDeckResponse> {
   const res = await fetch("/api/deck/load", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ decklist, sessionId }),
   });
 
@@ -139,7 +149,7 @@ export function streamChat(
     try {
       res = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ message, sessionId, mode }),
         signal: controller.signal,
       });

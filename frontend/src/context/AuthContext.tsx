@@ -37,14 +37,11 @@ export const AuthProvider: ParentComponent = (props) => {
 
     try {
       // Token comes from the JS-readable cookie set by the backend after OAuth.
-      // We no longer accept tokens via URL query params — that exposed full JWTs
-      // in server access logs and browser history.
-      let token = getCookie("auth_token_js") || localStorage.getItem("auth_token");
-
-      // Persist to localStorage so subsequent page loads don't need the cookie
-      if (token && !localStorage.getItem("auth_token")) {
-        localStorage.setItem("auth_token", token);
-      }
+      // Cookie is the primary source; localStorage is a same-origin fallback for
+      // cases where the cookie has already been consumed (e.g. cross-tab).
+      // We never proactively mirror the cookie into localStorage — that widens
+      // the XSS attack surface without adding security value.
+      const token = getCookie("auth_token_js") || localStorage.getItem("auth_token");
 
       if (!token) {
         setLoading(false);
@@ -87,8 +84,9 @@ export const AuthProvider: ParentComponent = (props) => {
       // best-effort — clear local state regardless
     }
 
-    // Clear local state
+    // Clear all local token storage
     localStorage.removeItem("auth_token");
+    document.cookie = "auth_token_js=; Max-Age=0; path=/";
     setUser(null);
   }
 

@@ -47,7 +47,7 @@ const isProduction = process.env.NODE_ENV === "production";
 
 // Fail fast in production if required secrets are missing
 if (isProduction) {
-  const required = ["JWT_SECRET", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "GITHUB_CALLBACK_URL", "FRONTEND_ORIGIN"];
+  const required = ["JWT_SECRET", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "GITHUB_CALLBACK_URL", "FRONTEND_ORIGIN", "OPENROUTER_API_KEY"];
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables in production: ${missing.join(", ")}`);
@@ -73,6 +73,44 @@ app.use(cors({
 
 app.use(express.json({ limit: "512kb" }));
 
+// ── Cookie + auth header parsing ──────────────────────────────────────────────
+
+import { parse } from "cookie";
+
+app.use((req, _res, next) => {
+  req.cookies = {};
+  const cookieHeader = req.headers.cookie;
+  if (cookieHeader) {
+    req.cookies = parse(cookieHeader);
+  }
+  // Allow Authorization: Bearer <token> as an alias for the auth cookie so the
+  // frontend can always send the token explicitly without relying on cookies.
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith("Bearer ")) {
+    req.cookies.auth_token = authHeader.substring(7);
+  }
+  next();
+});
+
+// ── CSRF protection ───────────────────────────────────────────────────────────
+// State-mutating API routes must be called with either:
+//   a) An Authorization: Bearer header (XHR/fetch — cross-origin forms can't set this), OR
+//   b) X-Requested-With: XMLHttpRequest
+// This blocks naive cross-origin form submissions that would rely solely on cookies.
+
+app.use("/api", (req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+    return next();
+  }
+  const hasBearer = req.headers.authorization?.startsWith("Bearer ");
+  const hasXhr = req.headers["x-requested-with"] === "XMLHttpRequest";
+  if (!hasBearer && !hasXhr) {
+    res.status(403).json({ error: "CSRF check failed" });
+    return;
+  }
+  next();
+});
+
 interface GitHubUser {
   id: number;
   login: string;
@@ -85,7 +123,7 @@ function generateToken(user: GitHubUser): string {
   return jwt.sign(
     { id: user.id, login: user.login, name: user.name, avatar: user.avatar_url, email: user.email },
     JWT_SECRET,
-    { expiresIn: "30d" }
+    { expiresIn: "7d" }
   );
 }
 
@@ -147,7 +185,7 @@ app.get("/auth/callback", async (req, res) => {
       httpOnly: true,
       secure: isProduction,
       sameSite: "lax" as const,
-      maxAge: 30 * 24 * 60 * 60 * 1000,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     };
 
     // HttpOnly cookie — backend/SSR reads
@@ -196,28 +234,7 @@ app.post("/auth/logout", (_req, res) => {
   res.json({ success: true });
 });
 
-// Need cookie-parser for express - using manual parsing above
-// Add cookie parsing middleware
-import { parse } from "cookie";
 
-// Add cookie parsing middleware
-app.use((req, _res, next) => {
-  req.cookies = {};
-  const cookieHeader = req.headers.cookie;
-  if (cookieHeader) {
-    req.cookies = parse(cookieHeader);
-  }
-  next();
-});
-
-// Also parse Authorization header
-app.use((req, _res, next) => {
-  const authHeader = req.headers.authorization;
-  if (authHeader?.startsWith("Bearer ")) {
-    req.cookies.auth_token = authHeader.substring(7);
-  }
-  next();
-});
 
 // ── POST /api/chat ─────────────────────────────────────────────────────────────
 
