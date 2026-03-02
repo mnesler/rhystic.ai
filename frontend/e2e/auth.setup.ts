@@ -1,52 +1,77 @@
 /**
  * Auth setup — runs once before all smoke tests.
  *
- * Opens a real browser to http://localhost:5174, clicks the GitHub login
- * button, and waits for you to complete OAuth. Once you land on /app the
- * auth_token cookie is saved to e2e/.auth/user.json so all subsequent test
- * runs skip the login step.
+ * Mints a valid 7-day JWT using the local JWT_SECRET (read from backend/.env)
+ * via the same jsonwebtoken library the server uses, seeds it into the browser
+ * context, and saves storage state to e2e/.auth/user.json.
  *
- * Re-authenticate by deleting e2e/.auth/user.json (or when the 7-day JWT expires).
+ * Subsequent runs reuse the saved state (delete user.json to force re-mint).
  */
 
-import { test as setup, expect } from "@playwright/test";
+import { test as setup } from "@playwright/test";
+import { execSync } from "child_process";
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import path from "path";
+import os from "os";
 
 const AUTH_FILE = path.join(__dirname, ".auth/user.json");
 
-setup("authenticate via GitHub OAuth", async ({ page }) => {
-  // If storage state already exists and is fresh, Playwright won't re-run this
-  // because it's treated as a dependency — but we still guard here.
-  await page.goto("/");
+// Repo root — two levels up from frontend/e2e/ (frontend/e2e → frontend → repo root)
+const REPO_ROOT = path.resolve(__dirname, "../..");
 
-  // Should land on landing page with the GitHub auth button
-  await expect(page.locator(".glitch-title")).toBeVisible({ timeout: 10_000 });
-
-  // Check if already logged in (token in localStorage from a previous run)
-  const alreadyLoggedIn = await page.evaluate(() => !!localStorage.getItem("auth_token"));
-  if (alreadyLoggedIn) {
-    await page.goto("/app");
-    await expect(page.locator(".advisor-layout")).toBeVisible({ timeout: 10_000 });
-    await page.context().storageState({ path: AUTH_FILE });
+setup("seed auth state", async ({ page }) => {
+  if (existsSync(AUTH_FILE)) {
+    console.log("  ✓ Auth state already exists — skipping setup");
     return;
   }
 
-  // Click the GitHub login button — this navigates to GitHub OAuth
-  const loginBtn = page.locator("button", { hasText: /github/i });
-  await expect(loginBtn).toBeVisible();
-  await loginBtn.click();
+  // Read JWT_SECRET from backend/.env
+  const envPath = path.join(REPO_ROOT, "backend/.env");
+  const envText = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
+  const jwtSecret =
+    envText.match(/JWT_SECRET=([^\r\n]+)/)?.[1]?.trim() ??
+    "dev-secret-change-in-prod";
 
-  // GitHub OAuth page — wait for redirect back to /app after you log in.
-  // Timeout is generous (2 min) so you have time to enter credentials.
-  console.log("\n\n  ╔══════════════════════════════════════════════════╗");
-  console.log("  ║  Complete GitHub login in the browser window.   ║");
-  console.log("  ║  Waiting up to 2 minutes...                     ║");
-  console.log("  ╚══════════════════════════════════════════════════╝\n");
+  // Write a temp mint script inside the repo root so node finds node_modules/jsonwebtoken
+  // (ESM package resolution walks up from the *file*, not from cwd)
+  const mintScript = path.join(REPO_ROOT, "__e2e_mint_token.mjs");
+  writeFileSync(
+    mintScript,
+    `
+import jwt from 'jsonwebtoken';
+const token = jwt.sign(
+  { id: 3143862, login: 'mnesler', name: 'Maxwell Nesler',
+    avatar: 'https://avatars.githubusercontent.com/u/3143862?v=4', email: null },
+  ${JSON.stringify(jwtSecret)},
+  { expiresIn: '7d' }
+);
+process.stdout.write(token);
+`.trim()
+  );
 
-  await page.waitForURL("**/app", { timeout: 120_000 });
-  await expect(page.locator(".advisor-layout")).toBeVisible({ timeout: 15_000 });
+  let token: string;
+  try {
+    token = execSync(`node ${mintScript}`, { cwd: REPO_ROOT, encoding: "utf8" }).trim();
+  } finally {
+    unlinkSync(mintScript);
+  }
 
-  // Save the full browser storage state (cookies + localStorage)
+  // Verify the backend accepts it
+  const res = await page.request.get("http://localhost:3002/auth/me", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!res.ok()) {
+    throw new Error(
+      `Backend rejected the minted token (${res.status()}). ` +
+      "Is the backend running? Does JWT_SECRET in backend/.env match?"
+    );
+  }
+
+  // Seed into browser and save storage state
+  await page.goto("http://localhost:5174");
+  await page.evaluate((t) => localStorage.setItem("auth_token", t), token);
   await page.context().storageState({ path: AUTH_FILE });
-  console.log("  ✓ Auth state saved to e2e/.auth/user.json\n");
+
+  console.log("  ✓ Auth state seeded and saved to e2e/.auth/user.json");
 });

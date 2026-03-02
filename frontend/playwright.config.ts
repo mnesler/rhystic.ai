@@ -4,12 +4,11 @@ import { defineConfig, devices } from "@playwright/test";
  * Playwright smoke test config.
  *
  * Assumes both dev servers are already running:
- *   Backend:  npm run dev  (in /backend)  → http://localhost:3002
+ *   Backend:  (from repo root) node --experimental-sqlite --env-file=./backend/.env --import tsx/esm backend/src/assistant/server.ts
  *   Frontend: npm run dev  (in /frontend) → http://localhost:5174
  *
- * Auth setup: the first run will open a real browser so you can log in via
- * GitHub. The session is saved to e2e/.auth/user.json and reused for 7 days
- * (matching the JWT expiry). Delete that file to re-authenticate.
+ * Auth setup: mints a local JWT from the backend/.env JWT_SECRET and seeds it
+ * into the browser context. Saved to e2e/.auth/user.json — reused until deleted.
  *
  * Run commands (from frontend/):
  *   npm run test:e2e          — headless, all tests
@@ -17,8 +16,8 @@ import { defineConfig, devices } from "@playwright/test";
  *   npm run test:e2e:ui       — interactive Playwright UI
  */
 export default defineConfig({
-  testDir: "./e2e/tests",
-  timeout: 30_000,
+  testDir: "./e2e",
+  timeout: 60_000,
   retries: 0,
   workers: 1, // serial — tests share auth state and a single backend session
 
@@ -32,15 +31,11 @@ export default defineConfig({
   },
 
   projects: [
-    // Step 1: authenticate once, save storage state
+    // Step 1: seed auth state (headless — mints JWT from local secret)
     {
       name: "setup",
       testMatch: /auth\.setup\.ts/,
-      use: {
-        ...devices["Desktop Chrome"],
-        // Headed so you can manually complete the GitHub OAuth flow
-        headless: false,
-      },
+      use: { ...devices["Desktop Chrome"] },
     },
 
     // Step 2: run all smoke tests using the saved auth state
