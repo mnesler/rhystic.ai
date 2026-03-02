@@ -1,14 +1,7 @@
 // Retrieval layer — combines SQL queries and vector search.
-//
-// Given a structured Intent, retrieves the most relevant cards and combos
-// from SQLite. All retrieved data is returned in a canonical shape that the
-// context builder can format into a prompt.
-
-import { getDb } from "../db/client.js";
-import { searchByText, search, embedText } from "./vector.js";
+import { query, getPool } from "../db/client.js";
+import { searchByText } from "./vector.js";
 import type { Intent } from "./intent.js";
-
-// ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface RetrievedCard {
   oracle_id: string;
@@ -17,7 +10,7 @@ export interface RetrievedCard {
   cmc: number;
   type_line: string;
   oracle_text: string | null;
-  color_identity: string; // JSON array string
+  color_identity: string;
   colors: string;
   edhrec_rank: number | null;
   rarity: string | null;
@@ -41,10 +34,8 @@ export interface RetrievedCombo {
 export interface RetrievalResult {
   cards: RetrievedCard[];
   combos: RetrievedCombo[];
-  hasEmbeddings: boolean; // false if card_embeddings table is empty
+  hasEmbeddings: boolean;
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 interface RawCard {
   oracle_id: string;
@@ -72,35 +63,21 @@ interface RawCombo {
   popularity: number;
 }
 
-interface TagRow {
-  oracle_id: string;
-  tag: string;
-}
-
 function jsonArr(s: string): string[] {
   try { return JSON.parse(s); } catch { return []; }
 }
 
-function colorFilter(colors: string[]): string {
-  if (colors.length === 0) return "";
-  // Match cards whose color_identity is a subset of the requested colors
-  // We do this by checking JSON-stored array contains only allowed colors.
-  // SQLite doesn't have JSON_EACH on all versions, so we use a LIKE approach.
-  // For each required color we check color_identity contains it.
-  // This is intentionally permissive — post-filter in JS if needed.
-  return "";
-}
-
-function attachTags(cards: RawCard[]): RetrievedCard[] {
+async function attachTags(cards: RawCard[]): Promise<RetrievedCard[]> {
   if (cards.length === 0) return [];
-  const db = getDb();
-  const ids = cards.map((c) => `'${c.oracle_id.replace(/'/g, "''")}'`).join(",");
-  const tagRows = db
-    .prepare(`SELECT oracle_id, tag FROM card_tags WHERE oracle_id IN (${ids})`)
-    .all() as unknown as TagRow[];
+  const ids = cards.map((c) => c.oracle_id);
+  const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
+  const result = await query<{ oracle_id: string; tag: string }>(
+    `SELECT oracle_id, tag FROM card_tags WHERE oracle_id IN (${placeholders})`,
+    ids
+  );
 
   const tagMap = new Map<string, string[]>();
-  for (const row of tagRows) {
+  for (const row of result.rows) {
     const existing = tagMap.get(row.oracle_id) ?? [];
     existing.push(row.tag);
     tagMap.set(row.oracle_id, existing);
@@ -112,15 +89,13 @@ function attachTags(cards: RawCard[]): RetrievedCard[] {
   }));
 }
 
-function hasEmbeddings(): boolean {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT COUNT(*) as n FROM card_embeddings")
-    .get() as { n: number };
-  return row.n > 0;
+async function hasEmbeddings(): Promise<boolean> {
+  const result = await query<{ count: number }>(
+    "SELECT COUNT(*) as count FROM card_embeddings"
+  );
+  return result.rows[0].count > 0;
 }
 
-// Deduplicate cards by oracle_id, keeping the one with the highest vectorScore
 function dedupeCards(cards: RetrievedCard[]): RetrievedCard[] {
   const seen = new Map<string, RetrievedCard>();
   for (const card of cards) {
@@ -132,28 +107,24 @@ function dedupeCards(cards: RetrievedCard[]): RetrievedCard[] {
   return [...seen.values()];
 }
 
-// ── Intent-specific retrieval strategies ──────────────────────────────────────
-
 async function retrieveCardLookup(intent: Intent): Promise<RetrievedCard[]> {
-  const db = getDb();
   const results: RawCard[] = [];
 
   for (const name of intent.cardNames) {
-    // Exact match first
-    const exact = db
-      .prepare("SELECT * FROM cards WHERE name = ? LIMIT 1")
-      .get(name) as RawCard | undefined;
-    if (exact) { results.push(exact); continue; }
+    const exact = await query<RawCard>(
+      "SELECT * FROM cards WHERE name = $1 LIMIT 1",
+      [name]
+    );
+    if (exact.rows[0]) { results.push(exact.rows[0]); continue; }
 
-    // Fuzzy LIKE fallback
-    const fuzzy = db
-      .prepare("SELECT * FROM cards WHERE name LIKE ? ORDER BY edhrec_rank ASC NULLS LAST LIMIT 3")
-      .all(`%${name}%`) as unknown as RawCard[];
-    results.push(...fuzzy);
+    const fuzzy = await query<RawCard>(
+      "SELECT * FROM cards WHERE name ILIKE $1 ORDER BY edhrec_rank ASC NULLS LAST LIMIT 3",
+      [`%${name}%`]
+    );
+    results.push(...fuzzy.rows);
   }
 
-  // If no explicit names, fall back to semantic search
-  if (results.length === 0 && hasEmbeddings()) {
+  if (results.length === 0 && await hasEmbeddings()) {
     return retrieveByVector(intent.searchQuery, 10);
   }
 
@@ -161,28 +132,26 @@ async function retrieveCardLookup(intent: Intent): Promise<RetrievedCard[]> {
 }
 
 async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard[]; combos: RetrievedCombo[] }> {
-  const db = getDb();
   let sqlCards: RawCard[] = [];
   let combos: RetrievedCombo[] = [];
 
-  // 1. Look up the commander card
   if (intent.commander) {
-    const cmd = db
-      .prepare("SELECT * FROM cards WHERE name = ? LIMIT 1")
-      .get(intent.commander) as RawCard | undefined;
-    if (cmd) {
-      sqlCards.push(cmd);
-      // Get combos containing the commander
-      const cmdCombos = db.prepare(`
+    const cmd = await query<RawCard>(
+      "SELECT * FROM cards WHERE name = $1 LIMIT 1",
+      [intent.commander]
+    );
+    if (cmd.rows[0]) {
+      sqlCards.push(cmd.rows[0]);
+      const cmdCombos = await query<RawCombo>(`
         SELECT DISTINCT co.id, co.card_names, co.produces, co.description,
                co.mana_needed, co.color_identity, co.popularity
         FROM combos co
         JOIN combo_cards cc ON cc.combo_id = co.id
-        WHERE cc.oracle_id = ?
+        WHERE cc.oracle_id = $1
         ORDER BY co.popularity DESC
         LIMIT 10
-      `).all(cmd.oracle_id) as unknown as RawCombo[];
-      combos = cmdCombos.map((r) => ({
+      `, [cmd.rows[0].oracle_id]);
+      combos = cmdCombos.rows.map((r: RawCombo) => ({
         id: r.id,
         card_names: jsonArr(r.card_names),
         produces: jsonArr(r.produces),
@@ -194,34 +163,31 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
     }
   }
 
-  // 2. SQL: cards matching requested tags
   if (intent.tags.length > 0) {
-    const tagPlaceholders = intent.tags.map(() => "?").join(",");
-    const tagCards = db.prepare(`
+    const tagPlaceholders = intent.tags.map((_, i) => `$${i + 1}`).join(",");
+    const tagCards = await query<RawCard>(`
       SELECT DISTINCT c.* FROM cards c
       JOIN card_tags ct ON ct.oracle_id = c.oracle_id
       WHERE ct.tag IN (${tagPlaceholders})
       ORDER BY c.edhrec_rank ASC NULLS LAST
       LIMIT 40
-    `).all(...intent.tags) as unknown as RawCard[];
-    sqlCards.push(...tagCards);
+    `, intent.tags);
+    sqlCards.push(...tagCards.rows);
   }
 
-  // 3. Vector search for thematic similarity
   let vectorCards: RetrievedCard[] = [];
-  if (hasEmbeddings()) {
-    const query = [
+  if (await hasEmbeddings()) {
+    const q = [
       intent.commander ? `Cards that synergize with ${intent.commander}` : "",
       ...intent.themes,
       intent.searchQuery,
     ].filter(Boolean).join(". ");
-    vectorCards = await retrieveByVector(query, 30);
+    vectorCards = await retrieveByVector(q, 30);
   }
 
-  const sqlWithTags = attachTags(sqlCards);
+  const sqlWithTags = await attachTags(sqlCards);
   const merged = dedupeCards([...sqlWithTags, ...vectorCards]);
 
-  // Sort: vector score > edhrec_rank
   merged.sort((a, b) => {
     const scoreDiff = (b.vectorScore ?? 0) - (a.vectorScore ?? 0);
     if (Math.abs(scoreDiff) > 0.02) return scoreDiff;
@@ -232,31 +198,33 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
 }
 
 async function retrieveComboFind(intent: Intent): Promise<{ cards: RetrievedCard[]; combos: RetrievedCombo[] }> {
-  const db = getDb();
   const combos: RetrievedCombo[] = [];
   const relatedCards: RawCard[] = [];
 
   for (const name of intent.cardNames) {
-    const card = db
-      .prepare("SELECT oracle_id FROM cards WHERE name = ? LIMIT 1")
-      .get(name) as { oracle_id: string } | undefined;
+    const card = await query<{ oracle_id: string }>(
+      "SELECT oracle_id FROM cards WHERE name = $1 LIMIT 1",
+      [name]
+    );
 
-    if (card) {
-      relatedCards.push(
-        db.prepare("SELECT * FROM cards WHERE oracle_id = ?").get(card.oracle_id) as unknown as RawCard
+    if (card.rows[0]) {
+      const cardData = await query<RawCard>(
+        "SELECT * FROM cards WHERE oracle_id = $1",
+        [card.rows[0].oracle_id]
       );
+      if (cardData.rows[0]) relatedCards.push(cardData.rows[0]);
 
-      const cardCombos = db.prepare(`
+      const cardCombos = await query<RawCombo>(`
         SELECT DISTINCT co.id, co.card_names, co.produces, co.description,
                co.mana_needed, co.color_identity, co.popularity
         FROM combos co
         JOIN combo_cards cc ON cc.combo_id = co.id
-        WHERE cc.oracle_id = ?
+        WHERE cc.oracle_id = $1
         ORDER BY co.popularity DESC
         LIMIT 15
-      `).all(card.oracle_id) as unknown as RawCombo[];
+      `, [card.rows[0].oracle_id]);
 
-      combos.push(...cardCombos.map((r) => ({
+      combos.push(...cardCombos.rows.map((r) => ({
         id: r.id,
         card_names: jsonArr(r.card_names),
         produces: jsonArr(r.produces),
@@ -268,96 +236,75 @@ async function retrieveComboFind(intent: Intent): Promise<{ cards: RetrievedCard
     }
   }
 
-  // Also do semantic search for relevant combo pieces
   let vectorCards: RetrievedCard[] = [];
-  if (hasEmbeddings()) {
+  if (await hasEmbeddings()) {
     vectorCards = await retrieveByVector(intent.searchQuery, 15);
   }
 
-  const merged = dedupeCards([...attachTags(relatedCards), ...vectorCards]);
+  const merged = dedupeCards([...(await attachTags(relatedCards)), ...vectorCards]);
   return { cards: merged, combos };
 }
 
-// Map well-known tag names to oracle_text keywords for the text-based fallback.
-// This lets us do reasonable searches even when card_tags is empty.
 const TAG_KEYWORDS: Record<string, string[]> = {
-  removal:         ["destroy target", "exile target", "return target", "-1/-1", "damage to target creature"],
-  wipe:            ["destroy all", "exile all", "deals damage to all", "each creature gets -"],
-  ramp:            ["search your library for a", "land card", "add {", "mana to your"],
-  draw:            ["draw a card", "draw cards", "draw two", "draw three"],
-  counter:         ["counter target", "counter that", "countered"],
-  tutor:           ["search your library for a card", "search your library for any card"],
-  reanimation:     ["return target creature card from your graveyard", "from your graveyard to the battlefield"],
-  protection:      ["hexproof", "shroud", "indestructible", "protection from"],
-  "token-gen":     ["create a", "token", "put a", "token onto the battlefield"],
-  "combo-piece":   ["infinite", "untap all", "untap target", "each time"],
+  removal: ["destroy target", "exile target", "return target", "-1/-1", "damage to target creature"],
+  wipe: ["destroy all", "exile all", "deals damage to all", "each creature gets -"],
+  ramp: ["search your library for a", "land card", "add {", "mana to your"],
+  draw: ["draw a card", "draw cards", "draw two", "draw three"],
+  counter: ["counter target", "counter that", "countered"],
+  tutor: ["search your library for a card", "search your library for any card"],
+  reanimation: ["return target creature card from your graveyard", "from your graveyard to the battlefield"],
+  protection: ["hexproof", "shroud", "indestructible", "protection from"],
+  "token-gen": ["create a", "token", "put a", "token onto the battlefield"],
+  "combo-piece": ["infinite", "untap all", "untap target", "each time"],
   "win-condition": ["win the game", "loses the game", "damage equal to"],
-  stax:           ["each player can't", "can't cast", "players can't", "your opponents can't"],
-  mill:            ["put the top", "cards of your library into your graveyard", "mill"],
-  flicker:         ["exile target", "return it to the battlefield", "blink"],
-  "mana-rock":     ["add {", "{t}:", "artifact"],
-  "mana-dork":     ["{t}: add {", "creature"],
-  recursion:       ["return target", "from your graveyard"],
-  "land-fetch":    ["search your library for a", "land", "put it onto the battlefield"],
-  "extra-turn":    ["take an extra turn", "takes an extra turn"],
-  anthem:          ["other creatures you control get +", "creatures you control get +"],
-  cantrip:         ["draw a card"],
+  stax: ["each player can't", "can't cast", "players can't", "your opponents can't"],
+  mill: ["put the top", "cards of your library into your graveyard", "mill"],
+  flicker: ["exile target", "return it to the battlefield", "blink"],
+  "mana-rock": ["add {", "{t}:", "artifact"],
+  "mana-dork": ["{t}: add {", "creature"],
+  recursion: ["return target", "from your graveyard"],
+  "land-fetch": ["search your library for a", "land", "put it onto the battlefield"],
+  "extra-turn": ["take an extra turn", "takes an extra turn"],
+  anthem: ["other creatures you control get +", "creatures you control get +"],
+  cantrip: ["draw a card"],
 };
 
-// Build a simple oracle_text LIKE filter from tags and themes.
-// Returns rows ordered by edhrec_rank with optional color filter applied in JS.
 async function retrieveTagSearchTextFallback(intent: Intent): Promise<RetrievedCard[]> {
-  const db = getDb();
-
-  // Collect all keyword phrases to search for
   const keywordPhrases: string[] = [];
   for (const tag of intent.tags) {
     const kws = TAG_KEYWORDS[tag] ?? [tag];
     keywordPhrases.push(...kws);
   }
-  // Also include themes as free-form keywords
   for (const theme of intent.themes) {
     keywordPhrases.push(theme);
   }
 
   if (keywordPhrases.length === 0) {
-    // Absolutely nothing to go on — vector search or empty
-    return hasEmbeddings() ? retrieveByVector(intent.searchQuery, 20) : [];
+    return (await hasEmbeddings()) ? retrieveByVector(intent.searchQuery, 20) : [];
   }
 
-  // Build OR conditions for each keyword phrase
-  const conditions = keywordPhrases.map(() => "lower(c.oracle_text) LIKE ?").join(" OR ");
-  const params: string[] = keywordPhrases.map((kw) => `%${kw.toLowerCase()}%`);
+  const conditions = keywordPhrases.map((_, i) => `LOWER(c.oracle_text) LIKE $${i + 1}`).join(" OR ");
+  const params = keywordPhrases.map((kw) => `%${kw.toLowerCase()}%`);
 
-  // Optional CMC filter if the user mentioned budget/cheap
-  let cmcClause = "";
-  if (intent.budget) cmcClause = " AND c.cmc <= 3";
+  let sql = `SELECT c.* FROM cards c WHERE (${conditions})`;
+  if (intent.budget) sql += " AND c.cmc <= 3";
+  sql += " ORDER BY c.edhrec_rank ASC NULLS LAST LIMIT 80";
 
-  const sql = `
-    SELECT c.* FROM cards c
-    WHERE (${conditions})${cmcClause}
-    ORDER BY c.edhrec_rank ASC NULLS LAST
-    LIMIT 80
-  `;
+  const rows = await query<RawCard>(sql, params);
 
-  const rows = db.prepare(sql).all(...params) as unknown as RawCard[];
-
-  // Post-filter by color identity
-  let filtered = rows;
+  let filtered = rows.rows;
   if (intent.colors.length > 0) {
     const allowed = new Set(intent.colors);
-    filtered = rows.filter((c) => {
+    filtered = rows.rows.filter((c) => {
       const ci = jsonArr(c.color_identity);
-      // A colorless card (empty ci) is always allowed
       if (ci.length === 0) return true;
       return ci.every((color) => allowed.has(color));
     });
   }
 
-  const result = attachTags(filtered.slice(0, 30));
+  const result = (await attachTags(filtered.slice(0, 30)));
 
-  // If we got very few results, also blend in vector search
-  if (result.length < 10 && hasEmbeddings()) {
+  if (result.length < 10 && await hasEmbeddings()) {
     const vectorCards = await retrieveByVector(intent.searchQuery, 20);
     return dedupeCards([...result, ...vectorCards]).slice(0, 30);
   }
@@ -365,52 +312,42 @@ async function retrieveTagSearchTextFallback(intent: Intent): Promise<RetrievedC
   return result;
 }
 
-function isTagTableEmpty(): boolean {
-  const db = getDb();
-  const row = db.prepare("SELECT COUNT(*) as n FROM card_tags").get() as { n: number };
-  return row.n === 0;
+async function isTagTableEmpty(): Promise<boolean> {
+  const result = await query<{ count: number }>("SELECT COUNT(*) as count FROM card_tags");
+  return result.rows[0].count === 0;
 }
 
 async function retrieveTagSearch(intent: Intent): Promise<RetrievedCard[]> {
-  const db = getDb();
-
   if (intent.tags.length === 0 && intent.themes.length === 0) {
-    // No tags, no themes — semantic fallback only
-    return hasEmbeddings() ? retrieveByVector(intent.searchQuery, 20) : [];
+    return (await hasEmbeddings()) ? retrieveByVector(intent.searchQuery, 20) : [];
   }
 
-  // If card_tags is empty, use the text-based keyword fallback
-  if (isTagTableEmpty()) {
+  if (await isTagTableEmpty()) {
     return retrieveTagSearchTextFallback(intent);
   }
 
-  // Normal path: card_tags is populated
-  // Build color identity filter if colors provided
-  // We load a broader set and post-filter in JS for correctness
-  const tagPlaceholders = intent.tags.map(() => "?").join(",");
-  const query = `
+  const tagPlaceholders = intent.tags.map((_, i) => `$${i + 1}`).join(",");
+  const sqlQuery = `
     SELECT DISTINCT c.* FROM cards c
     JOIN card_tags ct ON ct.oracle_id = c.oracle_id
     WHERE ct.tag IN (${tagPlaceholders})
+    ORDER BY c.edhrec_rank ASC NULLS LAST LIMIT 60
   `;
 
-  const rows = db.prepare(query + " ORDER BY c.edhrec_rank ASC NULLS LAST LIMIT 60")
-    .all(...intent.tags) as unknown as RawCard[];
+  const rows = await query<RawCard>(sqlQuery, intent.tags);
 
-  // Post-filter by color identity if requested
-  let filtered = rows;
+  let filtered = rows.rows;
   if (intent.colors.length > 0) {
     const allowed = new Set(intent.colors);
-    filtered = rows.filter((c) => {
+    filtered = rows.rows.filter((c: RawCard) => {
       const ci = jsonArr(c.color_identity);
       return ci.every((color) => allowed.has(color));
     });
   }
 
-  const result = attachTags(filtered.slice(0, 30));
+  const result = await attachTags(filtered.slice(0, 30));
 
-  // Blend in vector search if available and we have room
-  if (result.length < 20 && hasEmbeddings()) {
+  if (result.length < 20 && await hasEmbeddings()) {
     const vectorCards = await retrieveByVector(intent.searchQuery, 20);
     return dedupeCards([...result, ...vectorCards]).slice(0, 30);
   }
@@ -418,20 +355,19 @@ async function retrieveTagSearch(intent: Intent): Promise<RetrievedCard[]> {
   return result;
 }
 
-async function retrieveByVector(query: string, topK: number): Promise<RetrievedCard[]> {
-  const db = getDb();
-  const matches = await searchByText(query, topK);
-
+async function retrieveByVector(queryText: string, topK: number): Promise<RetrievedCard[]> {
+  const matches = await searchByText(queryText, topK);
   if (matches.length === 0) return [];
 
-  const ids = matches.map((m) => `'${m.oracle_id.replace(/'/g, "''")}'`).join(",");
-  const cards = db
-    .prepare(`SELECT * FROM cards WHERE oracle_id IN (${ids})`)
-    .all() as unknown as RawCard[];
+  const ids = matches.map((m) => m.oracle_id);
+  const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
+  const cards = await query<RawCard>(
+    `SELECT * FROM cards WHERE oracle_id IN (${placeholders})`,
+    ids
+  );
 
-  const withTags = attachTags(cards);
+  const withTags = await attachTags(cards.rows);
 
-  // Attach vector scores
   const scoreMap = new Map(matches.map((m) => [m.oracle_id, m.score]));
   for (const card of withTags) {
     card.vectorScore = scoreMap.get(card.oracle_id);
@@ -441,47 +377,39 @@ async function retrieveByVector(query: string, topK: number): Promise<RetrievedC
   return withTags;
 }
 
-// ── Public entry point ────────────────────────────────────────────────────────
-
 export async function retrieve(intent: Intent): Promise<RetrievalResult> {
-  const embeds = hasEmbeddings();
+  const embeds = await hasEmbeddings();
 
   switch (intent.type) {
     case "card-lookup": {
       const cards = await retrieveCardLookup(intent);
       return { cards, combos: [], hasEmbeddings: embeds };
     }
-
     case "deck-build": {
       const { cards, combos } = await retrieveDeckBuild(intent);
       return { cards, combos, hasEmbeddings: embeds };
     }
-
     case "combo-find": {
       const { cards, combos } = await retrieveComboFind(intent);
       return { cards, combos, hasEmbeddings: embeds };
     }
-
     case "tag-search": {
       const cards = await retrieveTagSearch(intent);
       return { cards, combos: [], hasEmbeddings: embeds };
     }
-
     case "power-assess": {
-      // For power assessment, retrieve the mentioned cards + their combos
       const cards = await retrieveCardLookup(intent);
-      const db = getDb();
       const combos: RetrievedCombo[] = [];
       for (const card of cards) {
-        const cardCombos = db.prepare(`
+        const cardCombos = await query<RawCombo>(`
           SELECT DISTINCT co.id, co.card_names, co.produces, co.description,
                  co.mana_needed, co.color_identity, co.popularity
           FROM combos co
           JOIN combo_cards cc ON cc.combo_id = co.id
-          WHERE cc.oracle_id = ?
+          WHERE cc.oracle_id = $1
           ORDER BY co.popularity DESC LIMIT 5
-        `).all(card.oracle_id) as unknown as RawCombo[];
-        combos.push(...cardCombos.map((r) => ({
+        `, [card.oracle_id]);
+combos.push(...cardCombos.rows.map((r: RawCombo) => ({
           id: r.id,
           card_names: jsonArr(r.card_names),
           produces: jsonArr(r.produces),
@@ -493,10 +421,8 @@ export async function retrieve(intent: Intent): Promise<RetrievalResult> {
       }
       return { cards, combos, hasEmbeddings: embeds };
     }
-
     case "general":
     default: {
-      // Semantic search only
       const cards = embeds
         ? await retrieveByVector(intent.searchQuery, 20)
         : [];

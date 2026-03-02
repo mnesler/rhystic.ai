@@ -21,7 +21,7 @@ import express from "express";
 import cors from "cors";
 import jwt from "jsonwebtoken";
 import { warmCache } from "./vector.js";
-import { getDb } from "../db/client.js";
+import { initDatabase, query } from "../db/client.js";
 import { classifyIntent } from "./intent.js";
 import { retrieve } from "./retrieve.js";
 import { buildContext, buildSystemPrompt, buildDeckSystemBlock } from "./context.js";
@@ -45,7 +45,6 @@ const PORT = parseInt(process.env.MTG_PORT ?? process.env.PORT ?? "3002");
 
 const isProduction = process.env.NODE_ENV === "production";
 
-// Fail fast in production if required secrets are missing
 if (isProduction) {
   const required = ["JWT_SECRET", "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "GITHUB_CALLBACK_URL", "FRONTEND_ORIGIN", "OPENROUTER_API_KEY"];
   const missing = required.filter((k) => !process.env[k]);
@@ -73,7 +72,7 @@ app.use(cors({
 
 app.use(express.json({ limit: "512kb" }));
 
-// ── Cookie + auth header parsing ──────────────────────────────────────────────
+// ── Cookie + auth header parsing ───────────────────────────────────────────────
 
 import { parse } from "cookie";
 
@@ -83,8 +82,6 @@ app.use((req, _res, next) => {
   if (cookieHeader) {
     req.cookies = parse(cookieHeader);
   }
-  // Allow Authorization: Bearer <token> as an alias for the auth cookie so the
-  // frontend can always send the token explicitly without relying on cookies.
   const authHeader = req.headers.authorization;
   if (authHeader?.startsWith("Bearer ")) {
     req.cookies.auth_token = authHeader.substring(7);
@@ -93,10 +90,6 @@ app.use((req, _res, next) => {
 });
 
 // ── CSRF protection ───────────────────────────────────────────────────────────
-// State-mutating API routes must be called with either:
-//   a) An Authorization: Bearer header (XHR/fetch — cross-origin forms can't set this), OR
-//   b) X-Requested-With: XMLHttpRequest
-// This blocks naive cross-origin form submissions that would rely solely on cookies.
 
 app.use("/api", (req, res, next) => {
   if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
@@ -188,11 +181,7 @@ app.get("/auth/callback", async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     };
 
-    // HttpOnly cookie — backend/SSR reads
     res.cookie("auth_token", jwtToken, cookieOptions);
-
-    // Readable-by-JS cookie — frontend reads to hydrate auth state
-    // Not in URL: prevents token from appearing in access logs or browser history
     res.cookie("auth_token_js", jwtToken, {
       ...cookieOptions,
       httpOnly: false,
@@ -234,8 +223,6 @@ app.post("/auth/logout", (_req, res) => {
   res.json({ success: true });
 });
 
-
-
 // ── POST /api/chat ─────────────────────────────────────────────────────────────
 
 app.post("/api/chat", async (req, res) => {
@@ -250,7 +237,6 @@ app.post("/api/chat", async (req, res) => {
     return;
   }
 
-  // Set up SSE
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -264,10 +250,6 @@ app.post("/api/chat", async (req, res) => {
   addUserMessage(session, message.trim());
 
   try {
-    // Step 1: classify intent.
-    // If a deck is loaded, prefix the message with a brief deck summary so the
-    // intent classifier knows the commander and can resolve pronouns like "it",
-    // "my deck", "make it more competitive", etc.
     const deck = session.loadedDeck;
     const messageForClassifier = deck
       ? `[Context: the user has loaded a Commander deck. Commander(s): ${deck.commanders.join(" / ")}. Total cards: ${deck.cardCount}.]\n\nUser message: ${message.trim()}`
@@ -275,34 +257,22 @@ app.post("/api/chat", async (req, res) => {
 
     const intent = await classifyIntent(messageForClassifier, session.history.slice(0, -1));
 
-    // Fix 2: if the classifier didn't extract a commander but the session has
-    // a loaded deck, pull the commander directly from the deck. This ensures
-    // retrieveDeckBuild fires correctly for queries like "make it more competitive".
     if (!intent.commander && deck?.commanders.length) {
       intent.commander = deck.commanders[0] ?? null;
     }
-    // Also seed colors from the deck if none were inferred
-    // (helps tag-search and deck-build retrieval target the right color identity)
+
     if (intent.colors.length === 0 && deck) {
-      // Derive color identity from the deck's cards (union of all color identities)
       const colorSet = new Set<string>();
       for (const card of deck.cards) {
-        // We don't have color_identity here (that's a DB field), so we leave
-        // this for the retrieval layer to handle via the commander lookup.
       }
-      void colorSet; // placeholder — retrieval uses commander to get color identity
+      void colorSet;
     }
 
     send("intent", intent);
 
-    // Step 2: retrieve relevant data.
-    // For power-assess and general intents on a deck-loaded session, promote to
-    // deck-build retrieval so we get commander combos + thematic cards rather
-    // than a generic card lookup that ignores the loaded deck.
     const effectiveIntent = { ...intent };
     if (deck && (intent.type === "power-assess" || intent.type === "general")) {
       effectiveIntent.type = "deck-build";
-      // Carry themes from the user's question into the search query
       if (!effectiveIntent.themes.includes("competitive")) {
         const lc = message.toLowerCase();
         if (lc.includes("competi")) effectiveIntent.themes = [...effectiveIntent.themes, "competitive", "optimized"];
@@ -319,11 +289,9 @@ app.post("/api/chat", async (req, res) => {
       hasEmbeddings: result.hasEmbeddings,
     });
 
-    // Step 3: build context block
     const context = buildContext(result, effectiveIntent);
     const responseMode: ResponseMode = mode === "verbose" || mode === "gooper" ? mode : "succinct";
     const baseSystemPrompt = buildSystemPrompt(effectiveIntent, responseMode);
-    // Prepend deck context if a deck is loaded in this session
     const deckBlock = session.loadedDeck
       ? buildDeckSystemBlock(session.loadedDeck)
       : null;
@@ -331,12 +299,11 @@ app.post("/api/chat", async (req, res) => {
       ? `${deckBlock}\n\n---\n\n${baseSystemPrompt}`
       : baseSystemPrompt;
 
-    // Step 4: stream the answer
     let fullText = "";
     await streamAnswer(
       systemPrompt,
       context,
-      session.history.slice(0, -1), // history without the current user message
+      session.history.slice(0, -1),
       message.trim(),
       {
         onToken: (token) => {
@@ -352,20 +319,14 @@ app.post("/api/chat", async (req, res) => {
       }
     );
 
-    // Store the assistant response in history
     addAssistantMessage(session, fullText);
 
-    // In gooper mode the LLM response IS the card list (plain CSV) — validate
-    // those names against the DB and use only them. Do NOT merge with RAG
-    // results; the whole point of gooper is a curated LLM-chosen set.
-    // In other modes, start with RAG results and augment with any **bold**
-    // card names the LLM added from its own knowledge.
     const retrievedCardNames = responseMode === "gooper"
-      ? extractConfirmedCardNames(
-          "",  // no bold-scan needed — fullText has no markdown
+      ? await extractConfirmedCardNames(
+          "",
           fullText.split(",").map((s) => s.trim()).filter(Boolean),
         )
-      : extractConfirmedCardNames(
+      : await extractConfirmedCardNames(
           fullText,
           result.cards.map((c) => c.name),
         );
@@ -405,20 +366,18 @@ app.delete("/api/chat/:sessionId", (req, res) => {
 });
 
 // ── Color identity enrichment ─────────────────────────────────────────────────
-// Batch-queries the DB for each card's color_identity and returns a new array
-// with colorIdentity attached. Cards not in the DB get colorIdentity: [].
 
-function enrichCardsWithColors(cards: import("../deck/types.js").DeckCard[]): import("../deck/types.js").DeckCard[] {
+async function enrichCardsWithColors(cards: import("../deck/types.js").DeckCard[]): Promise<import("../deck/types.js").DeckCard[]> {
   if (cards.length === 0) return cards;
-  const db = getDb();
   const names = [...new Set(cards.map((c) => c.name))];
-  const placeholders = names.map(() => "?").join(",");
-  const rows = db
-    .prepare(`SELECT name, color_identity FROM cards WHERE name IN (${placeholders})`)
-    .all(...names) as { name: string; color_identity: string }[];
+  const placeholders = names.map((_, i) => `$${i + 1}`).join(",");
+  const rows = await query<{ name: string; color_identity: string }>(
+    `SELECT name, color_identity FROM cards WHERE name IN (${placeholders})`,
+    names
+  );
 
   const colorMap = new Map<string, string[]>();
-  for (const row of rows) {
+  for (const row of rows.rows) {
     try { colorMap.set(row.name, JSON.parse(row.color_identity) as string[]); }
     catch { colorMap.set(row.name, []); }
   }
@@ -427,15 +386,8 @@ function enrichCardsWithColors(cards: import("../deck/types.js").DeckCard[]): im
 }
 
 // ── Card name extraction helper ───────────────────────────────────────────────
-//
-// After the LLM finishes streaming, scan its response for **bold** tokens and
-// validate each against the cards table.  Returns the union of RAG-retrieved
-// names and any confirmed bold names, deduplicated.
 
-function extractConfirmedCardNames(text: string, retrieved: string[]): string[] {
-  const db = getDb();
-
-  // Pull every **…** run from the response (card names are always bolded).
+async function extractConfirmedCardNames(text: string, retrieved: string[]): Promise<string[]> {
   const boldRe = /\*\*([^*\n]{1,60})\*\*/g;
   const candidates = new Set<string>();
   let m: RegExpExecArray | null;
@@ -444,31 +396,22 @@ function extractConfirmedCardNames(text: string, retrieved: string[]): string[] 
   }
 
   if (candidates.size === 0) {
-    // Nothing bold — just return the retrieved list
     return [...new Set(retrieved)];
   }
 
-  // Batch-confirm candidates against the DB (single indexed query).
-  const placeholders = [...candidates].map(() => "?").join(",");
-  const confirmed = db
-    .prepare(`SELECT name FROM cards WHERE name IN (${placeholders})`)
-    .all(...[...candidates]) as { name: string }[];
+  const names = [...candidates];
+  const placeholders = names.map((_, i) => `$${i + 1}`).join(",");
+  const confirmed = await query<{ name: string }>(
+    `SELECT name FROM cards WHERE name IN (${placeholders})`,
+    names
+  );
 
-  const confirmedNames = confirmed.map((r) => r.name);
+  const confirmedNames = confirmed.rows.map((r) => r.name);
 
-  // Merge and deduplicate, preserving retrieved names first
   return [...new Set([...retrieved, ...confirmedNames])];
 }
 
 // ── POST /api/deck/load ───────────────────────────────────────────────────────
-//
-// Load a deck into a session from either a Moxfield URL or a raw decklist.
-//
-// Request body:
-//   { sessionId?: string, moxfieldUrl?: string, decklist?: string }
-//
-// Response:
-//   { sessionId, commanders, cardCount, name?, warnings? }
 
 app.post("/api/deck/load", async (req, res) => {
   const { sessionId, moxfieldUrl, decklist } = req.body as {
@@ -486,7 +429,6 @@ app.post("/api/deck/load", async (req, res) => {
 
   try {
     if (moxfieldUrl?.trim()) {
-      // Validate it looks like a Moxfield URL before fetching
       if (!parseMoxfieldUrl(moxfieldUrl.trim())) {
         res.status(400).json({
           error: "Invalid Moxfield URL. Expected: https://moxfield.com/decks/{deckId}",
@@ -503,7 +445,7 @@ app.post("/api/deck/load", async (req, res) => {
         cardCount: deck.cardCount,
         name: deck.name,
         source: "moxfield",
-        cards: enrichCardsWithColors(deck.cards),
+        cards: await enrichCardsWithColors(deck.cards),
       });
     } else if (decklist?.trim()) {
       const { deck, warnings } = parseDecklist(decklist.trim());
@@ -515,7 +457,7 @@ app.post("/api/deck/load", async (req, res) => {
         cardCount: deck.cardCount,
         source: "paste",
         warnings: warnings.length > 0 ? warnings : undefined,
-        cards: enrichCardsWithColors(deck.cards),
+        cards: await enrichCardsWithColors(deck.cards),
       });
     }
   } catch (err) {
@@ -539,18 +481,24 @@ app.get("/api/health", (_req, res) => {
 
 const httpServer = createServer(app);
 
-httpServer.listen(PORT, () => {
-  console.log(`MTG Assistant running on http://localhost:${PORT}`);
-  console.log(`POST http://localhost:${PORT}/api/chat  { message, sessionId? }`);
-  console.log();
+async function main() {
+  if (process.env.DATABASE_URL) {
+    await initDatabase(process.env.DATABASE_URL);
+  }
 
-  // Warm the vector cache in the background after startup
-  setTimeout(() => {
-    try {
-      warmCache();
-    } catch (err) {
-      // No embeddings yet — user needs to run embed:cards first
-      console.warn("[vector] No embeddings loaded — run `npm run embed:cards` to enable semantic search.");
-    }
-  }, 500);
-});
+  httpServer.listen(PORT, () => {
+    console.log(`MTG Assistant running on http://localhost:${PORT}`);
+    console.log(`POST http://localhost:${PORT}/api/chat  { message, sessionId? }`);
+    console.log();
+
+    setTimeout(() => {
+      try {
+        warmCache();
+      } catch (err) {
+        console.warn("[vector] No embeddings loaded — run `npm run embed:cards` to enable semantic search.");
+      }
+    }, 500);
+  });
+}
+
+main().catch(console.error);

@@ -1,13 +1,8 @@
-// Database schema definitions
-// Run applySchema() once at startup to ensure all tables exist.
+import type { Pool } from "pg";
 
-import type { DatabaseSync } from "node:sqlite";
-
-export function applySchema(db: DatabaseSync): void {
-  db.exec(`
-    -- ── Cards ────────────────────────────────────────────────────────────────
-    -- One row per oracle ID (unique card identity, not per printing).
-    -- Only commander-legal cards are stored.
+export async function applySchema(pool: Pool): Promise<void> {
+  await pool.query(`
+    -- Cards table
     CREATE TABLE IF NOT EXISTS cards (
       oracle_id      TEXT PRIMARY KEY,
       name           TEXT NOT NULL,
@@ -15,51 +10,46 @@ export function applySchema(db: DatabaseSync): void {
       cmc            REAL NOT NULL DEFAULT 0,
       type_line      TEXT NOT NULL,
       oracle_text    TEXT,
-      colors         TEXT NOT NULL DEFAULT '[]',   -- JSON: ["G","U"]
-      color_identity TEXT NOT NULL DEFAULT '[]',   -- JSON: ["G","U","B"]
-      keywords       TEXT NOT NULL DEFAULT '[]',   -- JSON: ["Flying","Trample"]
-      power          TEXT,                          -- nullable, can be "*"
-      toughness      TEXT,                          -- nullable, can be "*"
-      loyalty        TEXT,                          -- planeswalkers only
-      produced_mana  TEXT,                          -- JSON: ["G","C"]
-      edhrec_rank    INTEGER,                       -- lower = more popular
-      rarity         TEXT,                          -- common|uncommon|rare|mythic
-      set_code       TEXT,                          -- most recognizable printing
-      ingested_at    TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+      colors         TEXT NOT NULL DEFAULT '[]',
+      color_identity TEXT NOT NULL DEFAULT '[]',
+      keywords       TEXT NOT NULL DEFAULT '[]',
+      power          TEXT,
+      toughness      TEXT,
+      loyalty        TEXT,
+      produced_mana  TEXT,
+      edhrec_rank    INTEGER,
+      rarity         TEXT,
+      set_code       TEXT,
+      ingested_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+      updated_at     TIMESTAMP NOT NULL DEFAULT NOW()
     );
 
-    -- ── Card Tags ─────────────────────────────────────────────────────────────
-    -- One row per tag per card. Written by the LLM tagging pipeline.
-    -- source = 'llm' | 'manual'
+    -- Card Tags table
     CREATE TABLE IF NOT EXISTS card_tags (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      id         SERIAL PRIMARY KEY,
       oracle_id  TEXT NOT NULL REFERENCES cards(oracle_id) ON DELETE CASCADE,
       tag        TEXT NOT NULL,
       source     TEXT NOT NULL DEFAULT 'llm',
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TIMESTAMP NOT NULL DEFAULT NOW(),
       UNIQUE(oracle_id, tag)
     );
     CREATE INDEX IF NOT EXISTS idx_card_tags_oracle ON card_tags(oracle_id);
-    CREATE INDEX IF NOT EXISTS idx_card_tags_tag    ON card_tags(tag);
+    CREATE INDEX IF NOT EXISTS idx_card_tags_tag ON card_tags(tag);
 
-    -- ── Combos ───────────────────────────────────────────────────────────────
-    -- One row per Commander Spellbook variant (combo).
+    -- Combos table
     CREATE TABLE IF NOT EXISTS combos (
-      id             TEXT PRIMARY KEY,             -- Spellbook variant ID
-      card_names     TEXT NOT NULL,                -- JSON: ["Sol Ring","Hullbreaker Horror"]
-      produces       TEXT NOT NULL,                -- JSON: ["Infinite colorless mana"]
-      description    TEXT,                         -- step-by-step how-to
+      id             TEXT PRIMARY KEY,
+      card_names     TEXT NOT NULL,
+      produces       TEXT NOT NULL,
+      description    TEXT,
       mana_needed    TEXT,
-      color_identity TEXT NOT NULL DEFAULT '[]',   -- JSON: ["U"]
+      color_identity TEXT NOT NULL DEFAULT '[]',
       popularity     INTEGER DEFAULT 0,
-      bracket_tag    TEXT,                         -- E|S|C power level indicator
-      ingested_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      bracket_tag    TEXT,
+      ingested_at    TIMESTAMP NOT NULL DEFAULT NOW()
     );
 
-    -- ── Combo Cards ───────────────────────────────────────────────────────────
-    -- Join table: which cards appear in which combos.
-    -- oracle_id is resolved after card ingest via a reconciliation pass.
+    -- Combo Cards table
     CREATE TABLE IF NOT EXISTS combo_cards (
       combo_id   TEXT NOT NULL REFERENCES combos(id) ON DELETE CASCADE,
       card_name  TEXT NOT NULL,
@@ -67,29 +57,28 @@ export function applySchema(db: DatabaseSync): void {
       PRIMARY KEY (combo_id, card_name)
     );
     CREATE INDEX IF NOT EXISTS idx_combo_cards_oracle ON combo_cards(oracle_id);
-    CREATE INDEX IF NOT EXISTS idx_combo_cards_name   ON combo_cards(card_name);
+    CREATE INDEX IF NOT EXISTS idx_combo_cards_name ON combo_cards(card_name);
 
-    -- ── Tagging Runs ──────────────────────────────────────────────────────────
-    -- Audit trail. One row per pipeline run; one run = one set.
+    -- Tagging Runs table
     CREATE TABLE IF NOT EXISTS tagging_runs (
-      id           TEXT PRIMARY KEY,               -- pipeline run ID from backend
+      id           TEXT PRIMARY KEY,
       set_code     TEXT NOT NULL,
-      started_at   TEXT NOT NULL DEFAULT (datetime('now')),
-      completed_at TEXT,
+      started_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMP,
       cards_tagged INTEGER DEFAULT 0,
-      status       TEXT NOT NULL DEFAULT 'running' -- running|completed|failed
+      status       TEXT NOT NULL DEFAULT 'running'
     );
 
-    -- ── Card Embeddings ───────────────────────────────────────────────────────
-    -- One row per card. Stores the raw float32 embedding as a BLOB.
-    -- model = the embedding model ID used (e.g. "openai/text-embedding-3-small")
-    -- Re-run the embed script with a different model to update these rows.
+    -- Card Embeddings table
     CREATE TABLE IF NOT EXISTS card_embeddings (
       oracle_id   TEXT PRIMARY KEY REFERENCES cards(oracle_id) ON DELETE CASCADE,
       model       TEXT NOT NULL,
-      embedding   BLOB NOT NULL,                   -- Float32Array serialised to buffer
-      dims        INTEGER NOT NULL,                -- vector dimensions (e.g. 1536)
-      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      embedding   BYTEA NOT NULL,
+      dims        INTEGER NOT NULL,
+      created_at  TIMESTAMP NOT NULL DEFAULT NOW()
     );
+
+    -- Enable UUID extension if not exists
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
   `);
 }

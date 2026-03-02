@@ -7,7 +7,7 @@
 // Cosine similarity is used throughout — vectors don't need to be unit-normalised
 // (we normalise on the fly), but pre-normalised vectors would be faster.
 
-import { getDb } from "../db/client.js";
+import { query } from "../db/client.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -60,13 +60,14 @@ function cosineSimilarity(a: Float32Array, normA: number, b: Float32Array, normB
  * Load all embeddings for a given model into memory.
  * Call this at server startup to avoid cold-start latency on first query.
  */
-export function warmCache(model: string = "openai/text-embedding-3-small"): void {
+export async function warmCache(model: string = "openai/text-embedding-3-small"): Promise<void> {
   if (_cache && _cacheModel === model) return;
 
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT oracle_id, embedding, dims FROM card_embeddings WHERE model = ?")
-    .all(model) as unknown as EmbeddingRow[];
+  const result = await query<EmbeddingRow>(
+    "SELECT oracle_id, embedding, dims FROM card_embeddings WHERE model = $1",
+    [model]
+  );
+  const rows = result.rows;
 
   _cache = rows.map((row) => {
     const vec = bufferToFloat32(row.embedding as unknown as Buffer);
@@ -81,13 +82,13 @@ export function warmCache(model: string = "openai/text-embedding-3-small"): void
  * Search for the top-k most similar cards to a query vector.
  * The query vector must be from the same model as the cached embeddings.
  */
-export function search(
+export async function search(
   queryVec: number[],
   topK: number = 20,
   model: string = "openai/text-embedding-3-small"
-): VectorMatch[] {
+): Promise<VectorMatch[]> {
   if (!_cache || _cacheModel !== model) {
-    warmCache(model);
+    await warmCache(model);
   }
 
   const cache = _cache!;

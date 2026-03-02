@@ -9,7 +9,7 @@
 // Stores Float32 vectors as BLOBs in card_embeddings table.
 
 import fetch from "node-fetch";
-import { getDb } from "../db/client.js";
+import { query, initDatabase } from "../db/client.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/embeddings";
 const DEFAULT_MODEL = "openai/text-embedding-3-small";
@@ -118,13 +118,20 @@ async function embedBatch(
 async function main(): Promise<void> {
   const { model, batchSize } = parseArgs();
   const key = apiKey();
-  const db = getDb();
+
+  if (process.env.DATABASE_URL) {
+    await initDatabase(process.env.DATABASE_URL);
+  }
 
   // Count total cards and already-embedded cards
-  const total = (db.prepare("SELECT COUNT(*) as n FROM cards").get() as { n: number }).n;
-  const done = (
-    db.prepare("SELECT COUNT(*) as n FROM card_embeddings WHERE model = ?").get(model) as { n: number }
-  ).n;
+  const totalResult = await query<{ n: number }>("SELECT COUNT(*) as n FROM cards");
+  const total = totalResult.rows[0].n;
+  
+  const doneResult = await query<{ n: number }>(
+    "SELECT COUNT(*) as n FROM card_embeddings WHERE model = $1",
+    [model]
+  );
+  const done = doneResult.rows[0].n;
 
   console.log(`Cards total: ${total.toLocaleString()}`);
   console.log(`Already embedded (${model}): ${done.toLocaleString()}`);

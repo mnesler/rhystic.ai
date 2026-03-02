@@ -12,7 +12,7 @@
 //   - The actual bulk download comes from *.scryfall.io and has no rate limit.
 
 import fetch from "node-fetch";
-import { getDb } from "../db/client.js";
+import { query, initDatabase } from "../db/client.js";
 
 // ── Types (subset of Scryfall card object we care about) ──────────────────────
 
@@ -95,7 +95,10 @@ function resolveColors(card: ScryfallCard): string[] {
 
 async function main(): Promise<void> {
   const { setCode } = parseArgs();
-  const db = getDb();
+  
+  if (process.env.DATABASE_URL) {
+    await initDatabase(process.env.DATABASE_URL);
+  }
 
   console.log("Fetching Scryfall bulk-data index...");
   const indexRes = await fetch("https://api.scryfall.com/bulk-data", {
