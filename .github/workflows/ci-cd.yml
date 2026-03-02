@@ -1,20 +1,32 @@
-name: Deploy Pre-Prod
+name: CI and Deploy
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm test
+
+  deploy-preprod:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
     permissions:
       contents: read
       id-token: write
-
     env:
       GCP_PROJECT: maxtory
       REGION: us-central1
-
     steps:
       - uses: actions/checkout@v4
 
@@ -51,23 +63,17 @@ jobs:
           build-args: |
             VITE_API_URL=https://mtg-backend-preprod-442808877651.us-central1.run.app
 
-      - name: Deploy backend to Cloud Run
+      - name: Deploy backend
         run: |
           gcloud run deploy mtg-backend-preprod \
             --image ${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/maxtory/mtg-backend:preprod-${{ steps.sha.outputs.SHORT_SHA }} \
-            --platform managed \
-            --region ${{ env.REGION }} \
-            --project ${{ env.GCP_PROJECT }} \
-            --allow-unauthenticated \
-            --port 3002
+            --platform managed --region ${{ env.REGION }} --project ${{ env.GCP_PROJECT }} \
+            --allow-unauthenticated --port 3002
 
-      - name: Deploy frontend to Cloud Run
+      - name: Deploy frontend
         run: |
           gcloud run deploy mtg-frontend-preprod \
             --image ${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/maxtory/mtg-frontend:preprod-${{ steps.sha.outputs.SHORT_SHA }} \
-            --platform managed \
-            --region ${{ env.REGION }} \
-            --project ${{ env.GCP_PROJECT }} \
-            --allow-unauthenticated \
-            --port 8080 \
+            --platform managed --region ${{ env.REGION }} --project ${{ env.GCP_PROJECT }} \
+            --allow-unauthenticated --port 8080 \
             --set-env-vars API_BACKEND_URL=https://mtg-backend-preprod-442808877651.us-central1.run.app
