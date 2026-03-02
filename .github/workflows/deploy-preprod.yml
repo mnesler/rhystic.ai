@@ -1,4 +1,4 @@
-name: Deploy to Pre-Prod
+name: Deploy Pre-Prod
 
 on:
   push:
@@ -7,6 +7,9 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     env:
       GCP_PROJECT: maxtory
