@@ -1,4 +1,4 @@
-name: Release
+name: Main Branch Push
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  build:
+  deploy:
     runs-on: ubuntu-latest
     needs: test
     permissions:
