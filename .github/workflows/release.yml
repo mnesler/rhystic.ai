@@ -1,4 +1,4 @@
-name: Pre-Prod Deploy
+name: Release Pipeline
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  push:
+  release:
     runs-on: ubuntu-latest
     needs: test
     permissions:
