@@ -16,4 +16,10 @@ jobs:
       - uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-      - run: gcloud run services list --project=maxtory
+      - run: gcloud auth configure-docker us-central1-docker.pkg.dev
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.backend
+          push: false
+          tags: test
