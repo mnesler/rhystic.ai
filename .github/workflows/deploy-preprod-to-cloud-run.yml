@@ -1,4 +1,4 @@
-name: Pre-Prod Deployment
+name: Pre-Prod Deploy
 
 on:
   push:
