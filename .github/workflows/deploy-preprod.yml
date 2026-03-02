@@ -4,16 +4,16 @@ on:
   push:
     branches: [main]
 
-env:
-  GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
-  REGION: us-central1
-  AR_REPO: maxtory
-  BACKEND_SERVICE: mtg-backend-preprod
-  FRONTEND_SERVICE: mtg-frontend-preprod
-
 jobs:
   deploy-preprod:
     runs-on: ubuntu-latest
+
+    env:
+      GCP_PROJECT: maxtory
+      REGION: us-central1
+      AR_REPO: maxtory
+      BACKEND_SERVICE: mtg-backend-preprod
+      FRONTEND_SERVICE: mtg-frontend-preprod
 
     permissions:
       contents: 'read'
@@ -29,7 +29,7 @@ jobs:
 
       - name: Configure Docker auth
         run: |
-          gcloud auth configure-docker $REGION-docker.pkg.dev
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -45,8 +45,8 @@ jobs:
           file: Dockerfile.backend
           push: true
           tags: |
-            $REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO/mtg-backend:preprod-${{ steps.sha.outputs.SHORT_SHA }}
-            $REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO/mtg-backend:latest
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/mtg-backend:preprod-${{ steps.sha.outputs.SHORT_SHA }}
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/mtg-backend:latest
 
       - name: Build and push frontend
         uses: docker/build-push-action@v6
@@ -55,28 +55,28 @@ jobs:
           file: Dockerfile.frontend
           push: true
           tags: |
-            $REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO/mtg-frontend:preprod-${{ steps.sha.outputs.SHORT_SHA }}
-            $REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO/mtg-frontend:latest
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/mtg-frontend:preprod-${{ steps.sha.outputs.SHORT_SHA }}
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/mtg-frontend:latest
           build-args: |
             VITE_API_URL=https://mtg-backend-preprod-442808877651.us-central1.run.app
 
       - name: Deploy backend to Cloud Run
         run: |
-          gcloud run deploy $BACKEND_SERVICE \
-            --image $REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO/mtg-backend:preprod-${{ steps.sha.outputs.SHORT_SHA }} \
+          gcloud run deploy ${{ env.BACKEND_SERVICE }} \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/mtg-backend:preprod-${{ steps.sha.outputs.SHORT_SHA }} \
             --platform managed \
-            --region $REGION \
-            --project $GCP_PROJECT \
+            --region ${{ env.REGION }} \
+            --project ${{ env.GCP_PROJECT }} \
             --allow-unauthenticated \
             --port 3002
 
       - name: Deploy frontend to Cloud Run
         run: |
-          gcloud run deploy $FRONTEND_SERVICE \
-            --image $REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO/mtg-frontend:preprod-${{ steps.sha.outputs.SHORT_SHA }} \
+          gcloud run deploy ${{ env.FRONTEND_SERVICE }} \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/mtg-frontend:preprod-${{ steps.sha.outputs.SHORT_SHA }} \
             --platform managed \
-            --region $REGION \
-            --project $GCP_PROJECT \
+            --region ${{ env.REGION }} \
+            --project ${{ env.GCP_PROJECT }} \
             --allow-unauthenticated \
             --port 8080 \
             --set-env-vars API_BACKEND_URL=https://mtg-backend-preprod-442808877651.us-central1.run.app

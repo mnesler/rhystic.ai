@@ -8,16 +8,16 @@ on:
         required: true
         default: 'latest'
 
-env:
-  GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
-  REGION: us-central1
-  AR_REPO: maxtory
-  BACKEND_SERVICE: mtg-backend-prod
-  FRONTEND_SERVICE: mtg-frontend-prod
-
 jobs:
   deploy-prod:
     runs-on: ubuntu-latest
+
+    env:
+      GCP_PROJECT: maxtory
+      REGION: us-central1
+      AR_REPO: maxtory
+      BACKEND_SERVICE: mtg-backend-prod
+      FRONTEND_SERVICE: mtg-frontend-prod
 
     permissions:
       contents: 'read'
@@ -33,25 +33,25 @@ jobs:
 
       - name: Configure Docker auth
         run: |
-          gcloud auth configure-docker $REGION-docker.pkg.dev
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
 
       - name: Deploy backend to Cloud Run
         run: |
-          gcloud run deploy $BACKEND_SERVICE \
-            --image $REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO/mtg-backend:${{ github.event.inputs.image_tag }} \
+          gcloud run deploy ${{ env.BACKEND_SERVICE }} \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/mtg-backend:${{ github.event.inputs.image_tag }} \
             --platform managed \
-            --region $REGION \
-            --project $GCP_PROJECT \
+            --region ${{ env.REGION }} \
+            --project ${{ env.GCP_PROJECT }} \
             --allow-unauthenticated \
             --port 3002
 
       - name: Deploy frontend to Cloud Run
         run: |
-          gcloud run deploy $FRONTEND_SERVICE \
-            --image $REGION-docker.pkg.dev/$GCP_PROJECT/$AR_REPO/mtg-frontend:${{ github.event.inputs.image_tag }} \
+          gcloud run deploy ${{ env.FRONTEND_SERVICE }} \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/${{ env.AR_REPO }}/mtg-frontend:${{ github.event.inputs.image_tag }} \
             --platform managed \
-            --region $REGION \
-            --project $GCP_PROJECT \
+            --region ${{ env.REGION }} \
+            --project ${{ env.GCP_PROJECT }} \
             --allow-unauthenticated \
             --port 8080 \
             --set-env-vars API_BACKEND_URL=https://mtg-backend-prod-442808877651.us-central1.run.app
