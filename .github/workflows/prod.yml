@@ -1,11 +1,11 @@
-name: Pre-Prod Deploy
+name: Prod Deploy
 
 on:
   push:
     branches: [main]
 
 jobs:
-  deploy:
+  run:
     runs-on: ubuntu-latest
     permissions:
       contents: read
