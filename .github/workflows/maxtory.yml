@@ -1,4 +1,4 @@
-name: Main Branch Push
+name: Maxtory Pipeline
 
 on:
   push:
