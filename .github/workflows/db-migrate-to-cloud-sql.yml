@@ -52,9 +52,8 @@ jobs:
       - uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-      - uses: google-github-actions/deploy-cloud-run@v2
-        with:
-          service: mtg-backend-preprod
-          image: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-backend:${{ github.sha }}
-          region: us-central1
-          flags: --allow-unauthenticated
+      - run: |
+          gcloud run deploy mtg-backend-preprod \
+            --image us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-backend:${{ github.sha }} \
+            --region us-central1 \
+            --allow-unauthenticated
