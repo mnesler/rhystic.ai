@@ -10,6 +10,14 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'Dockerfile.backend'
+  push:
+    branches: [main]
+    paths:
+      - 'backend/src/db/**'
+      - 'backend/src/assistant/server.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'Dockerfile.backend'
 
 jobs:
   test:
