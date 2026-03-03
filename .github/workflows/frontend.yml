@@ -65,7 +65,7 @@ jobs:
 
   build-and-push-prod:
     needs: deploy-preprod
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -88,7 +88,7 @@ jobs:
 
   deploy-prod:
     needs: build-and-push-prod
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read

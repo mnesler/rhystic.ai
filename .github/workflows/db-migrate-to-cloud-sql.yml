@@ -1,4 +1,4 @@
-name: DB Migrate to Cloud SQL
+name: Backend Deploy
 
 on:
   workflow_dispatch:
@@ -49,9 +49,11 @@ jobs:
           context: .
           file: Dockerfile.backend
           push: true
-          tags: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-backend:${{ github.sha }}
+          tags: |
+            us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-backend-preprod:${{ github.sha }}
+            us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-backend:${{ github.sha }}
 
-  deploy:
+  deploy-preprod:
     needs: build-and-push
     runs-on: ubuntu-latest
     permissions:
@@ -63,6 +65,23 @@ jobs:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       - run: |
           gcloud run deploy mtg-backend-preprod \
+            --image us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-backend-preprod:${{ github.sha }} \
+            --region us-central1 \
+            --allow-unauthenticated
+
+  deploy-prod:
+    needs: deploy-preprod
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - run: |
+          gcloud run deploy mtg-backend \
             --image us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-backend:${{ github.sha }} \
             --region us-central1 \
             --allow-unauthenticated
