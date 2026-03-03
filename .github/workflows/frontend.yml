@@ -1,0 +1,100 @@
+name: Frontend Deploy
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'Dockerfile.frontend'
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: cd frontend && npm ci
+      - run: cd frontend && npm run build
+
+  build-and-push-preprod:
+    needs: test-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - run: gcloud auth configure-docker us-central1-docker.pkg.dev
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.frontend
+          push: true
+          tags: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-frontend-preprod:${{ github.sha }}
+          build-args: |
+            VITE_API_URL=https://mtg-backend-preprod-442808877651.us-central1.run.app
+
+  deploy-preprod:
+    needs: build-and-push-preprod
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - run: |
+          gcloud run deploy mtg-frontend-preprod \
+            --image us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-frontend-preprod:${{ github.sha }} \
+            --region us-central1 \
+            --allow-unauthenticated \
+            --set-env-vars API_BACKEND_URL=https://mtg-backend-preprod-442808877651.us-central1.run.app
+
+  build-and-push-prod:
+    needs: deploy-preprod
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - run: gcloud auth configure-docker us-central1-docker.pkg.dev
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.frontend
+          push: true
+          tags: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-frontend:${{ github.sha }}
+          build-args: |
+            VITE_API_URL=https://mtg-backend-442808877651.us-central1.run.app
+
+  deploy-prod:
+    needs: build-and-push-prod
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - run: |
+          gcloud run deploy mtg-frontend \
+            --image us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-frontend:${{ github.sha }} \
+            --region us-central1 \
+            --allow-unauthenticated \
+            --set-env-vars API_BACKEND_URL=https://mtg-backend-442808877651.us-central1.run.app
