@@ -40,7 +40,7 @@ jobs:
           context: .
           file: Dockerfile.backend
           push: true
-          tags: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/mtg-repo/mtg-backend-preprod:${{ github.sha }}
+          tags: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-backend:${{ github.sha }}
 
   deploy:
     needs: build-and-push
@@ -55,6 +55,6 @@ jobs:
       - uses: google-github-actions/deploy-cloud-run@v2
         with:
           service: mtg-backend-preprod
-          image: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/mtg-repo/mtg-backend-preprod:${{ github.sha }}
+          image: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/maxtory/mtg-backend:${{ github.sha }}
           region: us-central1
           flags: --allow-unauthenticated
