@@ -1,6 +1,7 @@
 name: DB Migrate to Cloud SQL
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [main]
     paths:
