@@ -43,10 +43,3 @@ jobs:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
           region: us-central1
           flags: --memory=2Gi
-      - name: Deploy to prod (mtg-backend)
-        uses: google-github-actions/deploy-cloudrun@v2
-        with:
-          service: mtg-backend
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
-          region: us-central1
-          flags: --memory=2Gi
