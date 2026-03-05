@@ -7,7 +7,6 @@ on:
 env:
   REGISTRY: us-central1-docker.pkg.dev/maxtory/maxtory
   IMAGE: mtg-backend
-  SERVICE: mtg-backend-preprod
 
 jobs:
   build:
@@ -34,10 +33,20 @@ jobs:
           context: .
           file: Dockerfile.backend
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
-      - name: Deploy to Cloud Run
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
+      - name: Deploy to preprod (mtg-backend-preprod)
         uses: google-github-actions/deploy-cloudrun@v2
         with:
-          service: ${{ env.SERVICE }}
+          service: mtg-backend-preprod
           image: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
           region: us-central1
+          flags: --memory=2Gi
+      - name: Deploy to prod (mtg-backend)
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: mtg-backend
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
+          region: us-central1
+          flags: --memory=2Gi
