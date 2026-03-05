@@ -38,11 +38,6 @@ RUN printf '#!/bin/sh\n\
 set -e\n\
 BACKEND_URL=${API_BACKEND_URL:-https://mtg-backend-442808877651.us-central1.run.app}\n\
 cat > /etc/nginx/conf.d/default.conf << NGINX_EOF\n\
-map $http_upgrade $upgrade_connection {\n\
-    default upgrade;\n\
-    ""      close;\n\
-}\n\
-\n\
 server {\n\
     listen 8080;\n\
     server_name _;\n\
