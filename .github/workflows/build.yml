@@ -23,3 +23,5 @@ jobs:
           file: Dockerfile.backend
           push: false
           tags: test
+          build-args: |
+            GCP_SA_KEY=${{ secrets.GCP_SA_KEY }}
