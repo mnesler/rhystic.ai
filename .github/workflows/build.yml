@@ -26,6 +26,8 @@ jobs:
         run: |
           gcloud auth activate-service-account --key-file=<(echo '${{ secrets.GCP_SA_KEY }}')
           gcloud auth configure-docker us-central1-docker.pkg.dev
+      - name: Download DB from GCS
+        run: gsutil cp gs://rhystic_db/mtg.db data/mtg.db
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
