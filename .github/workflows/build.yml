@@ -6,10 +6,10 @@ on:
 
 env:
   REGISTRY: us-central1-docker.pkg.dev/maxtory/maxtory
-  IMAGE: mtg-backend
 
 jobs:
-  build:
+  build-backend:
+    name: Build & deploy backend → preprod
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -27,19 +27,56 @@ jobs:
           gcloud auth configure-docker us-central1-docker.pkg.dev
       - name: Download DB from GCS
         run: gsutil cp gs://rhystic_db/mtg.db data/mtg.db
-      - name: Build and push image
+      - name: Build and push backend image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.backend
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
-      - name: Deploy to preprod (mtg-backend-preprod)
+            ${{ env.REGISTRY }}/mtg-backend:${{ github.sha }}
+            ${{ env.REGISTRY }}/mtg-backend:latest
+      - name: Deploy backend to preprod
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: mtg-backend-preprod
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
+          image: ${{ env.REGISTRY }}/mtg-backend:${{ github.sha }}
           region: us-central1
           flags: --memory=2Gi
+
+  build-frontend:
+    name: Build & deploy frontend → preprod
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - name: Set up gcloud
+        run: |
+          gcloud auth activate-service-account --key-file=<(echo '${{ secrets.GCP_SA_KEY }}')
+          gcloud auth configure-docker us-central1-docker.pkg.dev
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.frontend
+          push: true
+          build-args: |
+            VITE_API_URL=https://mtg-frontend-preprod-n2jwqhiduq-uc.a.run.app
+          tags: |
+            ${{ env.REGISTRY }}/mtg-frontend:${{ github.sha }}
+            ${{ env.REGISTRY }}/mtg-frontend:latest
+      - name: Deploy frontend to preprod
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: mtg-frontend-preprod
+          image: ${{ env.REGISTRY }}/mtg-frontend:${{ github.sha }}
+          region: us-central1
+          env_vars: |
+            API_BACKEND_URL=https://mtg-backend-preprod-n2jwqhiduq-uc.a.run.app
