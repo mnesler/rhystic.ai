@@ -44,6 +44,7 @@ function makeIntent(overrides: Partial<Intent> = {}): Intent {
     cardNames: [],
     commander: null,
     colors: [],
+    commanderColors: [],
     tags: [],
     themes: [],
     budget: false,

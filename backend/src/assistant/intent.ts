@@ -27,6 +27,8 @@ export interface Intent {
   commander: string | null;
   // MTG color identities mentioned e.g. ["G","U"]
   colors: string[];
+  // Commander's color identity for filtering (from loaded deck)
+  commanderColors: string[];
   // Tags from our vocabulary that map to the request
   tags: string[];
   // Free-form semantic themes for vector search
@@ -171,6 +173,7 @@ export async function classifyIntent(
       cardNames: parsed.cardNames ?? [],
       commander: parsed.commander ?? null,
       colors: parsed.colors ?? [],
+      commanderColors: [],
       tags: parsed.tags ?? [],
       themes: parsed.themes ?? [],
       budget: parsed.budget ?? false,
@@ -183,6 +186,7 @@ export async function classifyIntent(
       cardNames: [],
       commander: null,
       colors: [],
+      commanderColors: [],
       tags: [],
       themes: [],
       budget: false,

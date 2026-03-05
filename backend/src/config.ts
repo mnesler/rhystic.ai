@@ -26,6 +26,7 @@ export interface RetrievalConfig {
   enableVectorSearch: boolean;
   enableCombos: boolean;
   enableCardTags: boolean;
+  filterByCommanderColor: boolean;
   limits: RetrievalLimits;
 }
 

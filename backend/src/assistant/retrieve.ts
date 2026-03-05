@@ -112,6 +112,25 @@ function dedupeCards(cards: RetrievedCard[]): RetrievedCard[] {
   return [...seen.values()];
 }
 
+function filterByCommanderColors(cards: RetrievedCard[], commanderColors: string[]): RetrievedCard[] {
+  if (commanderColors.length === 0 || !config.retrieval.filterByCommanderColor) {
+    return cards;
+  }
+  return cards.filter((card) => {
+    const cardColors = jsonArr(card.color_identity);
+    if (cardColors.length === 0) return true;
+    return cardColors.every((c) => commanderColors.includes(c));
+  });
+}
+
+function filterByCommanderColorsSql(commanderColors: string[]): string {
+  if (commanderColors.length === 0 || !config.retrieval.filterByCommanderColor) {
+    return "";
+  }
+  const colors = commanderColors.map((c) => `'${c}'`).join(",");
+  return ` AND (color_identity = '[]' OR color_identity::jsonb <@ '[${colors}]'::jsonb)`;
+}
+
 async function retrieveCardLookup(intent: Intent): Promise<RetrievedCard[]> {
   const results: RawCard[] = [];
 
@@ -133,7 +152,8 @@ async function retrieveCardLookup(intent: Intent): Promise<RetrievedCard[]> {
     return retrieveByVector(intent.searchQuery, config.retrieval.limits.cardLookup);
   }
 
-  return attachTags(results);
+  const withTags = await attachTags(results);
+  return filterByCommanderColors(withTags, intent.commanderColors);
 }
 
 async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard[]; combos: RetrievedCombo[] }> {
@@ -172,10 +192,11 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
 
   if (intent.tags.length > 0) {
     const tagPlaceholders = intent.tags.map((_, i) => `$${i + 1}`).join(",");
+    const colorFilter = filterByCommanderColorsSql(intent.commanderColors);
     const tagCards = await query<RawCard>(`
       SELECT DISTINCT c.* FROM cards c
       JOIN card_tags ct ON ct.oracle_id = c.oracle_id
-      WHERE ct.tag IN (${tagPlaceholders})
+      WHERE ct.tag IN (${tagPlaceholders})${colorFilter}
       ORDER BY c.edhrec_rank ASC NULLS LAST
       LIMIT ${config.retrieval.limits.tagCards}
     `, intent.tags);
@@ -201,7 +222,9 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
     return (a.edhrec_rank ?? 999999) - (b.edhrec_rank ?? 999999);
   });
 
-  return { cards: merged.slice(0, config.retrieval.limits.deckBuildMaxCards), combos };
+  const filtered = filterByCommanderColors(merged, intent.commanderColors);
+
+  return { cards: filtered.slice(0, config.retrieval.limits.deckBuildMaxCards), combos };
 }
 
 async function retrieveComboFind(intent: Intent): Promise<{ cards: RetrievedCard[]; combos: RetrievedCombo[] }> {

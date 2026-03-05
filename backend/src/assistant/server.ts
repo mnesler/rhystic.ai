@@ -262,6 +262,11 @@ app.post("/api/chat", async (req, res) => {
       intent.commander = deck.commanders[0] ?? null;
     }
 
+    if (deck?.commanders.length) {
+      const commanderColors = await getCommanderColors(deck.commanders);
+      intent.commanderColors = commanderColors;
+    }
+
     if (intent.colors.length === 0 && deck) {
       const colorSet = new Set<string>();
       for (const card of deck.cards) {
@@ -384,6 +389,25 @@ async function enrichCardsWithColors(cards: import("../deck/types.js").DeckCard[
   }
 
   return cards.map((c) => ({ ...c, colorIdentity: colorMap.get(c.name) ?? [] }));
+}
+
+async function getCommanderColors(commanders: string[]): Promise<string[]> {
+  if (commanders.length === 0) return [];
+  const placeholders = commanders.map((_, i) => `$${i + 1}`).join(",");
+  const rows = await query<{ name: string; color_identity: string }>(
+    `SELECT name, color_identity FROM cards WHERE name IN (${placeholders})`,
+    commanders
+  );
+  const allColors = new Set<string>();
+  for (const row of rows.rows) {
+    try {
+      const colors = JSON.parse(row.color_identity) as string[];
+      colors.forEach((c) => allColors.add(c));
+    } catch {
+      // skip
+    }
+  }
+  return [...allColors];
 }
 
 // ── Card name extraction helper ───────────────────────────────────────────────
