@@ -17,11 +17,11 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       - run: gcloud auth configure-docker us-central1-docker.pkg.dev
+      - name: Download DB from GCS
+        run: gsutil cp gs://rhystic_db/mtg.db data/mtg.db
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.backend
           push: false
           tags: test
-          build-args: |
-            GCP_SA_KEY=${{ secrets.GCP_SA_KEY }}
