@@ -18,7 +18,7 @@ RUN npx tsc
 
 FROM node:22-alpine AS production
 
-RUN apk add --no-cache tini
+RUN apk add --no-cache tini curl
 
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
@@ -29,10 +29,19 @@ COPY --from=base /app/node_modules ./node_modules
 COPY --from=base /app/dist ./dist
 COPY --from=base /app/package*.json ./
 
-COPY --chown=nodejs:nodejs data/mtg.db ./data/mtg.db
-
 RUN mkdir -p /app/data && \
     chown -R nodejs:nodejs /app/data
+
+RUN curl -sSL https://dl.google.com/dl/cloudsdk/release/install.sh | sh && \
+    mv google-cloud-sdk /opt/gcloud && \
+    ln -s /opt/gcloud/bin/gcloud /usr/local/bin/gcloud && \
+    ln -s /opt/gcloud/bin/gsutil /usr/local/bin/gsutil
+
+RUN gcloud auth activate-service-account --key-file=/dev/stdin <<EOF
+${GCP_SA_KEY}
+EOF
+
+RUN gsutil cp gs://rhystic_db/mtg.db /app/data/mtg.db
 
 ENV NODE_ENV=production
 

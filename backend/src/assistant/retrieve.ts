@@ -81,14 +81,19 @@ function jsonArr(s: string): string[] {
   try { return JSON.parse(s); } catch { return []; }
 }
 
-function colorFilter(colors: string[]): string {
-  if (colors.length === 0) return "";
-  // Match cards whose color_identity is a subset of the requested colors
-  // We do this by checking JSON-stored array contains only allowed colors.
-  // SQLite doesn't have JSON_EACH on all versions, so we use a LIKE approach.
-  // For each required color we check color_identity contains it.
-  // This is intentionally permissive — post-filter in JS if needed.
-  return "";
+function applyColorFilter<T extends { color_identity: string }>(rows: T[], allowedColors: string[]): T[] {
+  if (allowedColors.length === 0) return rows;
+  const allowed = new Set(allowedColors);
+  return rows.filter((c) => {
+    const ci = jsonArr(c.color_identity);
+    if (ci.length === 0) return true;
+    return ci.every((color) => allowed.has(color));
+  });
+}
+
+function resolveAllowedColors(commanderColors: string[], intentColors: string[]): string[] {
+  const merged = new Set([...commanderColors, ...intentColors]);
+  return [...merged];
 }
 
 function attachTags(cards: RawCard[]): RetrievedCard[] {
@@ -164,13 +169,15 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
   const db = getDb();
   let sqlCards: RawCard[] = [];
   let combos: RetrievedCombo[] = [];
+  let commanderColors: string[] = [];
 
-  // 1. Look up the commander card
+  // 1. Look up the commander card and derive color identity
   if (intent.commander) {
     const cmd = db
       .prepare("SELECT * FROM cards WHERE name = ? LIMIT 1")
       .get(intent.commander) as RawCard | undefined;
     if (cmd) {
+      commanderColors = jsonArr(cmd.color_identity);
       sqlCards.push(cmd);
       // Get combos containing the commander
       const cmdCombos = db.prepare(`
@@ -194,7 +201,10 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
     }
   }
 
-  // 2. SQL: cards matching requested tags
+  // Resolve allowed colors: merge commander colors with any colors from user's message
+  const allowedColors = resolveAllowedColors(commanderColors, intent.colors);
+
+  // 2. SQL: cards matching requested tags, filtered by color identity
   if (intent.tags.length > 0) {
     const tagPlaceholders = intent.tags.map(() => "?").join(",");
     const tagCards = db.prepare(`
@@ -202,12 +212,13 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
       JOIN card_tags ct ON ct.oracle_id = c.oracle_id
       WHERE ct.tag IN (${tagPlaceholders})
       ORDER BY c.edhrec_rank ASC NULLS LAST
-      LIMIT 40
+      LIMIT 60
     `).all(...intent.tags) as unknown as RawCard[];
-    sqlCards.push(...tagCards);
+    const filteredTagCards = applyColorFilter(tagCards, allowedColors);
+    sqlCards.push(...filteredTagCards);
   }
 
-  // 3. Vector search for thematic similarity
+  // 3. Vector search for thematic similarity, filtered by color identity
   let vectorCards: RetrievedCard[] = [];
   if (hasEmbeddings()) {
     const query = [
@@ -215,20 +226,23 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
       ...intent.themes,
       intent.searchQuery,
     ].filter(Boolean).join(". ");
-    vectorCards = await retrieveByVector(query, 30);
+    vectorCards = await retrieveByVector(query, 30, allowedColors);
   }
 
   const sqlWithTags = attachTags(sqlCards);
   const merged = dedupeCards([...sqlWithTags, ...vectorCards]);
 
+  // Final color filter in case commander was loaded without explicit colors
+  const finalFiltered = applyColorFilter(merged, allowedColors);
+
   // Sort: vector score > edhrec_rank
-  merged.sort((a, b) => {
+  finalFiltered.sort((a, b) => {
     const scoreDiff = (b.vectorScore ?? 0) - (a.vectorScore ?? 0);
     if (Math.abs(scoreDiff) > 0.02) return scoreDiff;
     return (a.edhrec_rank ?? 999999) - (b.edhrec_rank ?? 999999);
   });
 
-  return { cards: merged.slice(0, 50), combos };
+  return { cards: finalFiltered.slice(0, 50), combos };
 }
 
 async function retrieveComboFind(intent: Intent): Promise<{ cards: RetrievedCard[]; combos: RetrievedCombo[] }> {
@@ -418,9 +432,10 @@ async function retrieveTagSearch(intent: Intent): Promise<RetrievedCard[]> {
   return result;
 }
 
-async function retrieveByVector(query: string, topK: number): Promise<RetrievedCard[]> {
+async function retrieveByVector(query: string, topK: number, allowedColors: string[] = []): Promise<RetrievedCard[]> {
   const db = getDb();
-  const matches = await searchByText(query, topK);
+  const fetchK = allowedColors.length > 0 ? topK * 2 : topK;
+  const matches = await searchByText(query, fetchK);
 
   if (matches.length === 0) return [];
 
@@ -429,16 +444,17 @@ async function retrieveByVector(query: string, topK: number): Promise<RetrievedC
     .prepare(`SELECT * FROM cards WHERE oracle_id IN (${ids})`)
     .all() as unknown as RawCard[];
 
-  const withTags = attachTags(cards);
+  let filtered = applyColorFilter(cards, allowedColors);
 
-  // Attach vector scores
+  const withTags = attachTags(filtered);
+
   const scoreMap = new Map(matches.map((m) => [m.oracle_id, m.score]));
   for (const card of withTags) {
     card.vectorScore = scoreMap.get(card.oracle_id);
   }
 
   withTags.sort((a, b) => (b.vectorScore ?? 0) - (a.vectorScore ?? 0));
-  return withTags;
+  return withTags.slice(0, topK);
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────

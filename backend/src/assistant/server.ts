@@ -281,16 +281,21 @@ app.post("/api/chat", async (req, res) => {
     if (!intent.commander && deck?.commanders.length) {
       intent.commander = deck.commanders[0] ?? null;
     }
-    // Also seed colors from the deck if none were inferred
+    // Also seed colors from all commanders in the loaded deck if none were inferred
     // (helps tag-search and deck-build retrieval target the right color identity)
-    if (intent.colors.length === 0 && deck) {
-      // Derive color identity from the deck's cards (union of all color identities)
+    if (intent.colors.length === 0 && deck?.commanders.length) {
+      const db = getDb();
       const colorSet = new Set<string>();
-      for (const card of deck.cards) {
-        // We don't have color_identity here (that's a DB field), so we leave
-        // this for the retrieval layer to handle via the commander lookup.
+      for (const cmdName of deck.commanders) {
+        const row = db.prepare("SELECT color_identity FROM cards WHERE name = ? LIMIT 1").get(cmdName) as { color_identity: string } | undefined;
+        if (row) {
+          try {
+            const ci = JSON.parse(row.color_identity) as string[];
+            for (const c of ci) colorSet.add(c);
+          } catch {}
+        }
       }
-      void colorSet; // placeholder — retrieval uses commander to get color identity
+      if (colorSet.size > 0) intent.colors = [...colorSet];
     }
 
     send("intent", intent);
