@@ -18,7 +18,7 @@ RUN npx tsc
 
 FROM node:22-alpine AS production
 
-RUN apk add --no-cache tini curl
+RUN apk add --no-cache tini
 
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
@@ -32,16 +32,7 @@ COPY --from=base /app/package*.json ./
 RUN mkdir -p /app/data && \
     chown -R nodejs:nodejs /app/data
 
-RUN curl -sSL https://dl.google.com/dl/cloudsdk/release/install.sh | sh && \
-    mv google-cloud-sdk /opt/gcloud && \
-    ln -s /opt/gcloud/bin/gcloud /usr/local/bin/gcloud && \
-    ln -s /opt/gcloud/bin/gsutil /usr/local/bin/gsutil
-
-RUN gcloud auth activate-service-account --key-file=/dev/stdin <<EOF
-${GCP_SA_KEY}
-EOF
-
-RUN gsutil cp gs://rhystic_db/mtg.db /app/data/mtg.db
+COPY --chown=nodejs:nodejs data/mtg.db ./data/mtg.db
 
 ENV NODE_ENV=production
 
@@ -50,7 +41,7 @@ USER nodejs
 EXPOSE 3002
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:' + process.env.PORT + '/api/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+    CMD node -e "require('http').get('http://localhost:' + process.env.PORT + '/api/health', (r) =>{if (r.statusCode !== 200) throw new Error(r.statusCode)})"
 
 ENTRYPOINT ["/sbin/tini", "--"]
 
