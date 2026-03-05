@@ -8,6 +8,7 @@
 function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
   const token = localStorage.getItem("auth_token");
   return {
+    "X-Requested-With": "XMLHttpRequest",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...extra,
   };
