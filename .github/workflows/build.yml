@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
 
+env:
+  REGISTRY: us-central1-docker.pkg.dev/maxtory/maxtory
+  IMAGE: mtg-backend
+  SERVICE: mtg-backend-preprod
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,9 +28,16 @@ jobs:
           gcloud auth configure-docker us-central1-docker.pkg.dev
       - name: Download DB from GCS
         run: gsutil cp gs://rhystic_db/mtg.db data/mtg.db
-      - uses: docker/build-push-action@v6
+      - name: Build and push image
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.backend
-          push: false
-          tags: test
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE }}
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
+          region: us-central1
