@@ -2,6 +2,7 @@
 import { query, getPool } from "../db/client.js";
 import { searchByText } from "./vector.js";
 import type { Intent } from "./intent.js";
+import { config } from "../config.js";
 
 export interface RetrievedCard {
   oracle_id: string;
@@ -69,6 +70,9 @@ function jsonArr(s: string): string[] {
 
 async function attachTags(cards: RawCard[]): Promise<RetrievedCard[]> {
   if (cards.length === 0) return [];
+  if (!config.retrieval.enableCardTags) {
+    return cards.map((c) => ({ ...c, tags: [] }));
+  }
   const ids = cards.map((c) => c.oracle_id);
   const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
   const result = await query<{ oracle_id: string; tag: string }>(
@@ -90,6 +94,7 @@ async function attachTags(cards: RawCard[]): Promise<RetrievedCard[]> {
 }
 
 async function hasEmbeddings(): Promise<boolean> {
+  if (!config.retrieval.enableVectorSearch) return false;
   const result = await query<{ count: number }>(
     "SELECT COUNT(*) as count FROM card_embeddings"
   );
@@ -118,14 +123,14 @@ async function retrieveCardLookup(intent: Intent): Promise<RetrievedCard[]> {
     if (exact.rows[0]) { results.push(exact.rows[0]); continue; }
 
     const fuzzy = await query<RawCard>(
-      "SELECT * FROM cards WHERE name ILIKE $1 ORDER BY edhrec_rank ASC NULLS LAST LIMIT 3",
+      `SELECT * FROM cards WHERE name ILIKE $1 ORDER BY edhrec_rank ASC NULLS LAST LIMIT ${config.retrieval.limits.cardLookup}`,
       [`%${name}%`]
     );
     results.push(...fuzzy.rows);
   }
 
   if (results.length === 0 && await hasEmbeddings()) {
-    return retrieveByVector(intent.searchQuery, 10);
+    return retrieveByVector(intent.searchQuery, config.retrieval.limits.cardLookup);
   }
 
   return attachTags(results);
@@ -142,15 +147,17 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
     );
     if (cmd.rows[0]) {
       sqlCards.push(cmd.rows[0]);
-      const cmdCombos = await query<RawCombo>(`
-        SELECT DISTINCT co.id, co.card_names, co.produces, co.description,
-               co.mana_needed, co.color_identity, co.popularity
-        FROM combos co
-        JOIN combo_cards cc ON cc.combo_id = co.id
-        WHERE cc.oracle_id = $1
-        ORDER BY co.popularity DESC
-        LIMIT 10
-      `, [cmd.rows[0].oracle_id]);
+      const cmdCombos = config.retrieval.enableCombos
+        ? await query<RawCombo>(`
+          SELECT DISTINCT co.id, co.card_names, co.produces, co.description,
+                 co.mana_needed, co.color_identity, co.popularity
+          FROM combos co
+          JOIN combo_cards cc ON cc.combo_id = co.id
+          WHERE cc.oracle_id = $1
+          ORDER BY co.popularity DESC
+          LIMIT ${config.retrieval.limits.commanderCombos}
+        `, [cmd.rows[0].oracle_id])
+        : { rows: [] };
       combos = cmdCombos.rows.map((r: RawCombo) => ({
         id: r.id,
         card_names: jsonArr(r.card_names),
@@ -170,7 +177,7 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
       JOIN card_tags ct ON ct.oracle_id = c.oracle_id
       WHERE ct.tag IN (${tagPlaceholders})
       ORDER BY c.edhrec_rank ASC NULLS LAST
-      LIMIT 40
+      LIMIT ${config.retrieval.limits.tagCards}
     `, intent.tags);
     sqlCards.push(...tagCards.rows);
   }
@@ -182,7 +189,7 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
       ...intent.themes,
       intent.searchQuery,
     ].filter(Boolean).join(". ");
-    vectorCards = await retrieveByVector(q, 30);
+    vectorCards = await retrieveByVector(q, config.retrieval.limits.vectorCards);
   }
 
   const sqlWithTags = await attachTags(sqlCards);
@@ -194,7 +201,7 @@ async function retrieveDeckBuild(intent: Intent): Promise<{ cards: RetrievedCard
     return (a.edhrec_rank ?? 999999) - (b.edhrec_rank ?? 999999);
   });
 
-  return { cards: merged.slice(0, 50), combos };
+  return { cards: merged.slice(0, config.retrieval.limits.deckBuildMaxCards), combos };
 }
 
 async function retrieveComboFind(intent: Intent): Promise<{ cards: RetrievedCard[]; combos: RetrievedCombo[] }> {
@@ -214,15 +221,17 @@ async function retrieveComboFind(intent: Intent): Promise<{ cards: RetrievedCard
       );
       if (cardData.rows[0]) relatedCards.push(cardData.rows[0]);
 
-      const cardCombos = await query<RawCombo>(`
-        SELECT DISTINCT co.id, co.card_names, co.produces, co.description,
-               co.mana_needed, co.color_identity, co.popularity
-        FROM combos co
-        JOIN combo_cards cc ON cc.combo_id = co.id
-        WHERE cc.oracle_id = $1
-        ORDER BY co.popularity DESC
-        LIMIT 15
-      `, [card.rows[0].oracle_id]);
+      const cardCombos = config.retrieval.enableCombos
+        ? await query<RawCombo>(`
+          SELECT DISTINCT co.id, co.card_names, co.produces, co.description,
+                 co.mana_needed, co.color_identity, co.popularity
+          FROM combos co
+          JOIN combo_cards cc ON cc.combo_id = co.id
+          WHERE cc.oracle_id = $1
+          ORDER BY co.popularity DESC
+          LIMIT ${config.retrieval.limits.comboFindMaxCombos}
+        `, [card.rows[0].oracle_id])
+        : { rows: [] };
 
       combos.push(...cardCombos.rows.map((r) => ({
         id: r.id,
@@ -238,7 +247,7 @@ async function retrieveComboFind(intent: Intent): Promise<{ cards: RetrievedCard
 
   let vectorCards: RetrievedCard[] = [];
   if (await hasEmbeddings()) {
-    vectorCards = await retrieveByVector(intent.searchQuery, 15);
+    vectorCards = await retrieveByVector(intent.searchQuery, config.retrieval.limits.comboFindMaxCombos);
   }
 
   const merged = dedupeCards([...(await attachTags(relatedCards)), ...vectorCards]);
@@ -280,7 +289,7 @@ async function retrieveTagSearchTextFallback(intent: Intent): Promise<RetrievedC
   }
 
   if (keywordPhrases.length === 0) {
-    return (await hasEmbeddings()) ? retrieveByVector(intent.searchQuery, 20) : [];
+    return (await hasEmbeddings()) ? retrieveByVector(intent.searchQuery, config.retrieval.limits.generalMaxCards) : [];
   }
 
   const conditions = keywordPhrases.map((_, i) => `LOWER(c.oracle_text) LIKE $${i + 1}`).join(" OR ");
@@ -288,7 +297,7 @@ async function retrieveTagSearchTextFallback(intent: Intent): Promise<RetrievedC
 
   let sql = `SELECT c.* FROM cards c WHERE (${conditions})`;
   if (intent.budget) sql += " AND c.cmc <= 3";
-  sql += " ORDER BY c.edhrec_rank ASC NULLS LAST LIMIT 80";
+  sql += ` ORDER BY c.edhrec_rank ASC NULLS LAST LIMIT ${config.retrieval.limits.tagSearchMaxCards}`;
 
   const rows = await query<RawCard>(sql, params);
 
@@ -302,11 +311,11 @@ async function retrieveTagSearchTextFallback(intent: Intent): Promise<RetrievedC
     });
   }
 
-  const result = (await attachTags(filtered.slice(0, 30)));
+  const result = (await attachTags(filtered.slice(0, config.retrieval.limits.tagSearchMaxCards)));
 
   if (result.length < 10 && await hasEmbeddings()) {
-    const vectorCards = await retrieveByVector(intent.searchQuery, 20);
-    return dedupeCards([...result, ...vectorCards]).slice(0, 30);
+    const vectorCards = await retrieveByVector(intent.searchQuery, config.retrieval.limits.tagSearchMaxCards);
+    return dedupeCards([...result, ...vectorCards]).slice(0, config.retrieval.limits.tagSearchMaxCards);
   }
 
   return result;
@@ -331,7 +340,7 @@ async function retrieveTagSearch(intent: Intent): Promise<RetrievedCard[]> {
     SELECT DISTINCT c.* FROM cards c
     JOIN card_tags ct ON ct.oracle_id = c.oracle_id
     WHERE ct.tag IN (${tagPlaceholders})
-    ORDER BY c.edhrec_rank ASC NULLS LAST LIMIT 60
+    ORDER BY c.edhrec_rank ASC NULLS LAST LIMIT ${config.retrieval.limits.generalMaxCards}
   `;
 
   const rows = await query<RawCard>(sqlQuery, intent.tags);
@@ -345,11 +354,11 @@ async function retrieveTagSearch(intent: Intent): Promise<RetrievedCard[]> {
     });
   }
 
-  const result = await attachTags(filtered.slice(0, 30));
+  const result = await attachTags(filtered.slice(0, config.retrieval.limits.tagSearchMaxCards));
 
   if (result.length < 20 && await hasEmbeddings()) {
-    const vectorCards = await retrieveByVector(intent.searchQuery, 20);
-    return dedupeCards([...result, ...vectorCards]).slice(0, 30);
+    const vectorCards = await retrieveByVector(intent.searchQuery, config.retrieval.limits.tagSearchMaxCards);
+    return dedupeCards([...result, ...vectorCards]).slice(0, config.retrieval.limits.tagSearchMaxCards);
   }
 
   return result;
@@ -400,31 +409,33 @@ export async function retrieve(intent: Intent): Promise<RetrievalResult> {
     case "power-assess": {
       const cards = await retrieveCardLookup(intent);
       const combos: RetrievedCombo[] = [];
-      for (const card of cards) {
-        const cardCombos = await query<RawCombo>(`
-          SELECT DISTINCT co.id, co.card_names, co.produces, co.description,
-                 co.mana_needed, co.color_identity, co.popularity
-          FROM combos co
-          JOIN combo_cards cc ON cc.combo_id = co.id
-          WHERE cc.oracle_id = $1
-          ORDER BY co.popularity DESC LIMIT 5
-        `, [card.oracle_id]);
-combos.push(...cardCombos.rows.map((r: RawCombo) => ({
-          id: r.id,
-          card_names: jsonArr(r.card_names),
-          produces: jsonArr(r.produces),
-          description: r.description,
-          mana_needed: r.mana_needed,
-          color_identity: jsonArr(r.color_identity),
-          popularity: r.popularity,
-        })));
+      if (config.retrieval.enableCombos) {
+        for (const card of cards) {
+          const cardCombos = await query<RawCombo>(`
+            SELECT DISTINCT co.id, co.card_names, co.produces, co.description,
+                   co.mana_needed, co.color_identity, co.popularity
+            FROM combos co
+            JOIN combo_cards cc ON cc.combo_id = co.id
+            WHERE cc.oracle_id = $1
+            ORDER BY co.popularity DESC LIMIT ${config.retrieval.limits.powerAssessMaxCards}
+          `, [card.oracle_id]);
+          combos.push(...cardCombos.rows.map((r: RawCombo) => ({
+            id: r.id,
+            card_names: jsonArr(r.card_names),
+            produces: jsonArr(r.produces),
+            description: r.description,
+            mana_needed: r.mana_needed,
+            color_identity: jsonArr(r.color_identity),
+            popularity: r.popularity,
+          })));
+        }
       }
       return { cards, combos, hasEmbeddings: embeds };
     }
     case "general":
     default: {
       const cards = embeds
-        ? await retrieveByVector(intent.searchQuery, 20)
+        ? await retrieveByVector(intent.searchQuery, config.retrieval.limits.generalMaxCards)
         : [];
       return { cards, combos: [], hasEmbeddings: embeds };
     }

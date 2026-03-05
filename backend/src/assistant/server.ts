@@ -16,6 +16,7 @@
 //   data: {"type":"error",    "data": "error message"}
 
 import "dotenv/config";
+import "../config.js";
 import { createServer } from "http";
 import express from "express";
 import cors from "cors";

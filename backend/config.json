@@ -1,0 +1,23 @@
+{
+  "intent": {
+    "enableCommander": true,
+    "enableTags": true,
+    "enableThemes": true
+  },
+  "retrieval": {
+    "enableVectorSearch": true,
+    "enableCombos": true,
+    "enableCardTags": true,
+    "limits": {
+      "cardLookup": 3,
+      "commanderCombos": 10,
+      "tagCards": 40,
+      "vectorCards": 30,
+      "deckBuildMaxCards": 50,
+      "comboFindMaxCombos": 15,
+      "tagSearchMaxCards": 80,
+      "generalMaxCards": 60,
+      "powerAssessMaxCards": 20
+    }
+  }
+}
