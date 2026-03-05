@@ -13,6 +13,7 @@ RUN npm install --include-workspace-root
 
 COPY backend/src ./src
 COPY backend/tsconfig.json ./
+COPY backend/config.json ./
 
 RUN npx tsc
 
@@ -28,6 +29,7 @@ WORKDIR /app
 COPY --from=base /app/node_modules ./node_modules
 COPY --from=base /app/dist ./dist
 COPY --from=base /app/package*.json ./
+COPY --from=base /app/config.json ./
 
 RUN mkdir -p /app/data && \
     chown -R nodejs:nodejs /app/data
