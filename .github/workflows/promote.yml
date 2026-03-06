@@ -77,7 +77,7 @@ jobs:
           image: ${{ steps.frontend.outputs.image }}
           region: us-central1
           env_vars: |
-            API_BACKEND_URL=https://mtg-backend-n2jwqhiduq-uc.a.run.app
+            API_BACKEND_URL=https://mtg-backend-442808877651.us-central1.run.app
 
       - name: Tag release in git
         run: |
