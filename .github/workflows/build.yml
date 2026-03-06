@@ -73,7 +73,7 @@ jobs:
           file: Dockerfile.frontend
           push: true
           build-args: |
-            VITE_API_URL=https://mtg-frontend-preprod-n2jwqhiduq-uc.a.run.app
+            VITE_API_URL=
           tags: |
             ${{ env.REGISTRY }}/mtg-frontend:${{ github.sha }}
             ${{ env.REGISTRY }}/mtg-frontend:latest
@@ -84,4 +84,4 @@ jobs:
           image: ${{ env.REGISTRY }}/mtg-frontend:${{ github.sha }}
           region: us-central1
           env_vars: |
-            API_BACKEND_URL=https://mtg-backend-preprod-n2jwqhiduq-uc.a.run.app
+            API_BACKEND_URL=https://mtg-backend-preprod-442808877651.us-central1.run.app
