@@ -69,6 +69,11 @@ jobs:
           image: ${{ steps.backend.outputs.image }}
           region: us-central1
           flags: --memory=2Gi
+          secrets: |
+            GITHUB_CLIENT_ID=GITHUB_CLIENT_ID:latest
+            GITHUB_CLIENT_SECRET=GITHUB_CLIENT_SECRET:latest
+            GITHUB_CALLBACK_URL=GITHUB_CALLBACK_URL:latest
+            FRONTEND_ORIGIN=FRONTEND_ORIGIN:latest
 
       - name: Deploy frontend to prod
         uses: google-github-actions/deploy-cloudrun@v2

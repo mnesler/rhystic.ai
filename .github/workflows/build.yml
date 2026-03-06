@@ -43,6 +43,11 @@ jobs:
           image: ${{ env.REGISTRY }}/mtg-backend:${{ github.sha }}
           region: us-central1
           flags: --memory=2Gi
+          secrets: |
+            GITHUB_CLIENT_ID=GITHUB_CLIENT_ID_PREPROD:latest
+            GITHUB_CLIENT_SECRET=GITHUB_CLIENT_SECRET_PREPROD:latest
+            GITHUB_CALLBACK_URL=GITHUB_CALLBACK_URL_PREPROD:latest
+            FRONTEND_ORIGIN=FRONTEND_ORIGIN_PREPROD:latest
 
   build-frontend:
     name: Build & deploy frontend → preprod
